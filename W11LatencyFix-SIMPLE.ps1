@@ -225,28 +225,27 @@ if ($TotalFreed -gt 0) {
 # ============================================================
 Write-Host "`n== Generating UNDO Script ==" -ForegroundColor Cyan
 if ($Script:Changes.Count -gt 0) {
-    $undoContent = @"
-# W11LatencyFix UNDO Script - Generated $(Get-Date)
-`$LogDir = "$env:SystemDrive\W11LatencyFixLogs"
-`$LogFile = "`$LogDir\UNDO_`$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
-if (-not (Test-Path `$LogDir)) { New-Item -Path `$LogDir -ItemType Directory -Force | Out-Null }
-function Write-Log { param([string]`$Message) "[`$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] `$Message" | Add-Content -Path `$LogFile; Write-Host "  `$Message" }
-Write-Host "UNDO Script Starting..." -ForegroundColor Cyan
-
-"@
+    $date = Get-Date
+    $undoContent = "# W11LatencyFix UNDO Script - Generated $date" + "`n"
+    $undoContent += '#Requires -RunAsAdministrator' + "`n"
+    $undoContent += '`$LogDir = "C:\W11LatencyFixLogs"' + "`n"
+    $undoContent += '`$LogFile = "$LogDir\UNDO_' + (Get-Date -Format 'yyyyMMdd_HHmmss') + '.log"' + "`n"
+    $undoContent += 'if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }' + "`n"
+    $undoContent += 'function Write-Log { param([string]$Message) Add-Content -Path $LogFile -Value $Message; Write-Host "  $Message" }' + "`n"
+    $undoContent += 'Write-Host "Undo Script Starting..." -ForegroundColor Cyan' + "`n"
+    
     foreach ($change in $Script:Changes) {
         $path = $change.Path
         $name = $change.Name
         $oldVal = $change.OldValue
         if ($oldVal -eq "NOT_PRESENT") {
-            $undoContent += "Remove-ItemProperty -Path `"$path`" -Name `"$name`" -Force -ErrorAction SilentlyContinue`n"
+            $undoContent += 'Remove-ItemProperty -Path "' + $path + '" -Name "' + $name + '" -Force -ErrorAction SilentlyContinue' + "`n"
         } else {
-            $undoContent += "Set-ItemProperty -Path `"$path`" -Name `"$name`" -Value $oldVal -Force`n"
+            $undoContent += 'Set-ItemProperty -Path "' + $path + '" -Name "' + $name + '" -Value ' + $oldVal + ' -Force' + "`n"
         }
     }
-    $undoContent += "Write-Host '`nUNDO Complete!' -ForegroundColor Green`n"
-    $undoContent += "Write-Host 'Log: `$LogFile' -ForegroundColor Yellow`n"
-    $undoContent += "Write-Host '`nPlease restart your computer for changes to take effect.' -ForegroundColor Yellow`n"
+    
+    $undoContent += 'Write-Host "UNDO Complete!" -ForegroundColor Green' + "`n"
     
     if (-not $WhatIf) {
         Set-Content -Path $UndoScript -Value $undoContent -Encoding UTF8
