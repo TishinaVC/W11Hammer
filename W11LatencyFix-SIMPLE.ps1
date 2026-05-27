@@ -90,3 +90,7 @@ Write-Log "Starting..." "INFO"
 Write-Host "Script is working!" -ForegroundColor Green
 
 Write-Log "Completed!" "SUCCESS"
+
+Write-Host ""
+Write-Host "Press any key to exit..." -ForegroundColor Cyan
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
