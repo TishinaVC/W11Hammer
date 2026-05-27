@@ -1,5 +1,4 @@
 #Requires -Version 5.1
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     W11LatencyFix v1.0 - SAFE Windows 11 Network Latency Optimizer
