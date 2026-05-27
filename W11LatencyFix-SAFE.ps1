@@ -102,7 +102,7 @@
     Preview all changes without applying them
 #>
 
-[CmdletBinding(SupportsShouldProcess=$true)]
+[CmdletBinding()]
 param(
     [switch]$WhatIf,
     [switch]$AcceptTerms
