@@ -140,15 +140,20 @@ Set-SafeRegValue "HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR" "Game
 Write-Host "`nGenerating Undo Script" -ForegroundColor Cyan
 if ($Script:Changes.Count -gt 0) {
     $undoContent = "# W11LatencyFix UNDO - Generated $(Get-Date)`n"
-    $undoContent += '#Requires -RunAsAdministrator' + "`n"
+    $undoContent += '# Self-elevation' + "`n"
+    $undoContent += '$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)' + "`n"
+    $undoContent += 'if (-not $isAdmin) { Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs; exit }' + "`n"
+    $undoContent += 'Write-Host "UNDO Script Starting..." -ForegroundColor Cyan' + "`n"
     foreach ($c in $Script:Changes) {
         if ($c.OldValue -eq "NOT_PRESENT") {
-            $undoContent += 'Remove-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Force' + "`n"
+            $undoContent += 'try { Remove-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Force -ErrorAction SilentlyContinue } catch {}' + "`n"
         } else {
-            $undoContent += 'Set-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Value ' + $c.OldValue + ' -Force' + "`n"
+            $undoContent += 'try { Set-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Value ' + $c.OldValue + ' -Force } catch {}' + "`n"
         }
     }
-    $undoContent += 'Write-Host "UNDO Complete!" -ForegroundColor Green' + "`n"
+    $undoContent += 'Write-Host "`nUNDO Complete!" -ForegroundColor Green' + "`n"
+    $undoContent += 'Write-Host "Press any key to exit..." -ForegroundColor Yellow' + "`n"
+    $undoContent += '$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")' + "`n"
     if (-not $WhatIf) {
         Set-Content -Path $UndoScript -Value $undoContent -Encoding UTF8
         Write-Host "  Created: $UndoScript" -ForegroundColor Green

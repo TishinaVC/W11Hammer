@@ -282,5 +282,5 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Log "Completed! Changes: $($Script:Changes.Count), Freed: $TotalFreed MB" "SUCCESS"
 
 Write-Host ""
-Write-Host "Press any key to exit..." -ForegroundColor Cyan
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host "Script finished. Check log at: $LogFile" -ForegroundColor Cyan
+Start-Sleep -Seconds 5
