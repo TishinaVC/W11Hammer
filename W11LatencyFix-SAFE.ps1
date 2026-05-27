@@ -247,6 +247,7 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
     Start-Sleep -Seconds 2
     $ArgString = '-NoProfile -ExecutionPolicy Bypass -File "' + $MyInvocation.MyCommand.Path + '"'
     if ($WhatIf) { $ArgString += ' -WhatIf' }
+    if ($AcceptTerms) { $ArgString += ' -AcceptTerms' }
     Start-Process -FilePath "powershell.exe" -ArgumentList $ArgString -Verb RunAs
     exit
 }
