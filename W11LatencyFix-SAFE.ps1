@@ -134,20 +134,16 @@ if (-not $WhatIf -and -not $AcceptTerms) {
 }
 
 # ============================================================
-# SAFETY: System Restore Point Creation (Required before changes)
+# SAFETY: Pre-Execution Checks
 # ============================================================
 if (-not $WhatIf) {
     Write-Host ""
     Write-Host "  🛡️  Creating System Restore Point..." -ForegroundColor Cyan
     
     try {
-        # Enable System Restore if not already enabled
         Enable-ComputerRestore -Drive "$env:SystemDrive\" -ErrorAction SilentlyContinue | Out-Null
-        
-        # Create restore point
         $RestorePointName = "Before W11LatencyFix v$ScriptVersion - $Timestamp"
         Checkpoint-Computer -Description $RestorePointName -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop
-        
         Write-Host "  ✓ System Restore Point created: $RestorePointName" -ForegroundColor Green
         Write-Log "System Restore Point created: $RestorePointName" "SUCCESS"
     }
@@ -156,69 +152,46 @@ if (-not $WhatIf) {
         Write-Host "  ⚠️  WARNING: Could not create System Restore Point" -ForegroundColor Yellow
         Write-Host "  Error: $_" -ForegroundColor DarkYellow
         Write-Host ""
-        Write-Host "  This script requires a restore point for safety." -ForegroundColor Yellow
-        Write-Host "  Please enable System Restore manually and try again." -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  Alternatively, use -WhatIf to preview changes." -ForegroundColor Cyan
-        Write-Host ""
-        
-        $ContinueWithoutRestore = Read-Host "  Continue without restore point? (NOT RECOMMENDED) [y/N]"
+        $ContinueWithoutRestore = Read-Host "  Continue without restore point? [y/N]"
         if ($ContinueWithoutRestore -ne 'y' -and $ContinueWithoutRestore -ne 'Y') {
-            Write-Host "  Exiting for safety. Please enable System Restore and try again." -ForegroundColor Red
+            Write-Host "  Exiting for safety." -ForegroundColor Red
             exit 1
         }
-        
         Write-Host "  Continuing WITHOUT restore point. YOU ASSUME ALL RISK." -ForegroundColor Red
         Write-Log "User chose to continue WITHOUT System Restore Point" "WARN"
     }
-}
-
-# ============================================================
-# SAFETY: Verify Reversibility (Ensure backup/undo capability)
-# ============================================================
-if (-not $WhatIf) {
+    
     Write-Host ""
     Write-Host "  🛡️  Verifying Reversibility (Backup/Undo capability)..." -ForegroundColor Cyan
     
-    # Test backup directory writability
     try {
         $TestFile = "$BackupDir\_test_write_$Timestamp.tmp"
         "test" | Out-File -FilePath $TestFile -Force -ErrorAction Stop
         Remove-Item -Path $TestFile -Force -ErrorAction SilentlyContinue
-        Write-Host "  ✓ Backup directory is writable: $BackupDir" -ForegroundColor Green
+        Write-Host "  ✓ Backup directory is writable" -ForegroundColor Green
     }
     catch {
         Write-Host ""
         Write-Host "  ❌ CRITICAL ERROR: Cannot write to backup directory!" -ForegroundColor Red
-        Write-Host "  Path: $BackupDir" -ForegroundColor Red
-        Write-Host "  Error: $_" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Changes CANNOT be reversed without backup capability." -ForegroundColor Red
         Write-Host "  Exiting for safety." -ForegroundColor Red
-        Write-Host ""
         exit 1
     }
     
-    # Verify we can export registry (required for undo)
     try {
         $TestRegBackup = "$BackupDir\_test_registry_export.reg"
         reg export "HKCU\Software\Microsoft\Windows\CurrentVersion" "$TestRegBackup" /y 2>&1 | Out-Null
         if (Test-Path $TestRegBackup) {
             Remove-Item -Path $TestRegBackup -Force -ErrorAction SilentlyContinue
             Write-Host "  ✓ Registry export capability verified" -ForegroundColor Green
-        } else {
+        }
+        else {
             throw "Registry export failed"
         }
     }
     catch {
         Write-Host ""
         Write-Host "  ❌ CRITICAL ERROR: Cannot export registry!" -ForegroundColor Red
-        Write-Host "  Undo functionality will not work." -ForegroundColor Red
-        Write-Host "  Error: $_" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Changes CANNOT be reversed without registry backup." -ForegroundColor Red
         Write-Host "  Exiting for safety." -ForegroundColor Red
-        Write-Host ""
         exit 1
     }
     
