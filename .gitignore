@@ -1,0 +1,27 @@
+# PowerShell
+*.ps1.log
+*.ps1.xml
+
+# Logs
+*.log
+logs/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Backup files
+*~
+*.bak
+*.tmp
+
+# Don't ignore the main script
+!W11LatencyFix-SAFE.ps1
+!README.md
+!LICENSE
