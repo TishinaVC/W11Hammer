@@ -8,6 +8,7 @@ param(
     [string]$Mode = "Baseline",
     [string]$BaselineFile,
     [switch]$ExploreRestart,
+    [switch]$AutoCompare,
     [switch]$Silent
 )
 
@@ -18,6 +19,7 @@ if (-not $isAdmin) {
     $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" -Mode $Mode"
     if ($BaselineFile) { $arg += " -BaselineFile `"$BaselineFile`"" }
     if ($ExploreRestart) { $arg += " -ExploreRestart" }
+    if ($AutoCompare) { $arg += " -AutoCompare" }
     if ($Silent) { $arg += " -Silent" }
     Start-Process powershell.exe -ArgumentList $arg -Verb RunAs
     exit
@@ -36,44 +38,104 @@ function Get-ElapsedMicroseconds($sw) {
     return [math]::Round(($sw.ElapsedTicks * 1000000.0) / $Script:Freq, 3)
 }
 
-# Statistical analysis
+# IQR Outlier Rejection - Scientifically removes interference spikes
 function Get-Statistics {
     param([double[]]$Values)
     $sorted = $Values | Sort-Object
     $n = $Values.Count
-    $mean = ($Values | Measure-Object -Average).Average
-    $median = if ($n % 2 -eq 0) { ($sorted[$n/2 - 1] + $sorted[$n/2]) / 2 } else { $sorted[($n - 1) / 2] }
-    $variance = ($Values | ForEach-Object { [math]::Pow($_ - $mean, 2) } | Measure-Object -Average).Average
-    $stddev = [math]::Sqrt($variance)
+    if ($n -lt 4) {
+        $mean = ($Values | Measure-Object -Average).Average
+        $variance = ($Values | ForEach-Object { [math]::Pow($_ - $mean, 2) } | Measure-Object -Average).Average
+        return @{
+            Samples = $n; Mean = [math]::Round($mean, 3); Median = [math]::Round($mean, 3)
+            StdDev = [math]::Round([math]::Sqrt($variance), 3); Min = [math]::Round($sorted[0], 3)
+            Max = [math]::Round($sorted[-1], 3); Raw = $Values; OutliersRejected = 0; CV = 0
+        }
+    }
+    # IQR outlier rejection
+    $q1Idx = [math]::Floor($n * 0.25)
+    $q3Idx = [math]::Floor($n * 0.75)
+    $q1 = $sorted[$q1Idx]
+    $q3 = $sorted[$q3Idx]
+    $iqr = $q3 - $q1
+    $lower = $q1 - (1.5 * $iqr)
+    $upper = $q3 + (1.5 * $iqr)
+    $filtered = $Values | Where-Object { $_ -ge $lower -and $_ -le $upper }
+    $rejected = $n - $filtered.Count
+    $sortedF = $filtered | Sort-Object
+    $nf = $filtered.Count
+    $meanF = ($filtered | Measure-Object -Average).Average
+    $medianF = if ($nf % 2 -eq 0) { ($sortedF[$nf/2 - 1] + $sortedF[$nf/2]) / 2 } else { $sortedF[($nf - 1) / 2] }
+    $varianceF = ($filtered | ForEach-Object { [math]::Pow($_ - $meanF, 2) } | Measure-Object -Average).Average
+    $stddevF = [math]::Sqrt($varianceF)
+    $cv = if ($meanF -gt 0) { [math]::Round(($stddevF / $meanF) * 100, 1) } else { 0 }
     return @{
-        Samples = $n
-        Mean    = [math]::Round($mean, 3)
-        Median  = [math]::Round($median, 3)
-        StdDev  = [math]::Round($stddev, 3)
-        Min     = [math]::Round(($Values | Measure-Object -Minimum).Minimum, 3)
-        Max     = [math]::Round(($Values | Measure-Object -Maximum).Maximum, 3)
+        Samples = $nf
+        Mean    = [math]::Round($meanF, 3)
+        Median  = [math]::Round($medianF, 3)
+        StdDev  = [math]::Round($stddevF, 3)
+        Min     = [math]::Round(($filtered | Measure-Object -Minimum).Minimum, 3)
+        Max     = [math]::Round(($filtered | Measure-Object -Maximum).Maximum, 3)
         Raw     = $Values
+        OutliersRejected = $rejected
+        CV      = $cv
     }
 }
 
-# Generic micro-benchmark runner
+function Test-SystemIdle {
+    param([int]$Seconds = 3, [int]$MaxCpuPercent = 10)
+    $samples = @()
+    for ($i = 0; $i -lt $Seconds; $i++) {
+        $cpu = (Get-Counter '\Processor(_Total)\% Processor Time' -SampleInterval 1 -MaxSamples 1).CounterSamples.CookedValue
+        $samples += $cpu
+        if ($cpu -gt $MaxCpuPercent) { return @{Idle = $false; Cpu = [math]::Round($cpu, 1)} }
+    }
+    $avgCpu = ($samples | Measure-Object -Average).Average
+    return @{Idle = $true; Cpu = [math]::Round($avgCpu, 1)}
+}
+
 function Measure-MicroBenchmark {
     param(
         [scriptblock]$ScriptBlock,
         [int]$Warmup = 5,
-        [int]$Iterations = 30
+        [int]$Iterations = 30,
+        [int]$MaxRetries = 2,
+        [double]$MaxCV = 25.0
     )
-    # Warmup
-    for ($i = 0; $i -lt $Warmup; $i++) { & $ScriptBlock | Out-Null }
-    # Actual measurement
-    $times = @()
-    for ($i = 0; $i -lt $Iterations; $i++) {
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        & $ScriptBlock | Out-Null
-        $sw.Stop()
-        $times += (Get-ElapsedMicroseconds $sw)
+    # Wait for system idle
+    $idleCheck = Test-SystemIdle -Seconds 2 -MaxCpuPercent 15
+    if (-not $idleCheck.Idle -and -not $Silent) {
+        Write-Host "    [WARN] System CPU was $($idleCheck.Cpu)% - measurements may be noisy" -ForegroundColor DarkYellow
     }
-    return (Get-Statistics $times)
+    # Set high priority for measurement consistency
+    $oldPriority = [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass
+    [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'High'
+    try {
+        # Warmup
+        for ($i = 0; $i -lt $Warmup; $i++) { & $ScriptBlock | Out-Null }
+        $bestResult = $null
+        for ($attempt = 0; $attempt -le $MaxRetries; $attempt++) {
+            $times = @()
+            for ($i = 0; $i -lt $Iterations; $i++) {
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                & $ScriptBlock | Out-Null
+                $sw.Stop()
+                $times += (Get-ElapsedMicroseconds $sw)
+            }
+            $stats = Get-Statistics $times
+            if ($null -eq $bestResult -or $stats.CV -lt $bestResult.CV) {
+                $bestResult = $stats
+            }
+            if ($stats.CV -le $MaxCV) { break }
+            if (-not $Silent -and $attempt -lt $MaxRetries) {
+                Write-Host "    [RETRY $attempt] CV $($stats.CV)% too high, re-measuring..." -ForegroundColor DarkYellow
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        return $bestResult
+    } finally {
+        [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = $oldPriority
+    }
 }
 
 # ============================================================================
@@ -184,6 +246,161 @@ function Measure-FileWriteLatency {
     return $stats
 }
 
+function Measure-DnsResolutionLatency {
+    # Actual DNS resolution using .NET Dns class
+    $target = "localhost"
+    return (Measure-MicroBenchmark -ScriptBlock {
+        $null = [System.Net.Dns]::GetHostAddresses($target)
+    } -Warmup 5 -Iterations 30)
+}
+
+function Measure-TcpConnectLatency {
+    # Actual TCP socket connect to localhost ephemeral port
+    # First we need a listener
+    $listener = $null
+    try {
+        $listener = New-Object System.Net.Sockets.TcpListener ([System.Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        $port = $listener.LocalEndpoint.Port
+        $results = @()
+        $warmup = 3
+        $samples = 20
+        for ($i = 0; $i -lt ($warmup + $samples); $i++) {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $client = New-Object System.Net.Sockets.TcpClient
+            $client.Connect("127.0.0.1", $port)
+            $sw.Stop()
+            $client.Close()
+            if ($i -ge $warmup) {
+                $results += (Get-ElapsedMicroseconds $sw)
+            }
+        }
+        $listener.Stop()
+        $stats = Get-Statistics $results
+        $stats.Note = "TCP connect/disconnect to localhost ephemeral port"
+        return $stats
+    } catch {
+        if ($listener) { $listener.Stop() }
+        return @{Valid = $false; Note = "TCP connect test failed: $_"}
+    }
+}
+
+function Measure-ServiceEnumerationLatency {
+    # Measures overhead of querying all services (we disable many)
+    return (Measure-MicroBenchmark -ScriptBlock {
+        $null = Get-Service | Select-Object -First 1
+    } -Warmup 5 -Iterations 30)
+}
+
+function Measure-RandomFileReadLatency {
+    # Random 4KB reads from 16MB file
+    # NOTE: Uses ZERO-filled data to avoid AV heuristic scanning of random bytes
+    $testFile = "$env:TEMP\w11prf_rdr_$(Get-Random).dat"
+    $fs = $null
+    $readFs = $null
+    try {
+        # Create 16MB zero-filled file (AV-friendly)
+        $fs = [System.IO.File]::Create($testFile)
+        $zeros = New-Object byte[] 65536
+        for ($i = 0; $i -lt 256; $i++) { $fs.Write($zeros, 0, 65536) }
+        $fs.Close(); $fs = $null
+        $fileSize = (Get-Item $testFile).Length
+        $rng = New-Object Random
+        $times = @()
+        $warmup = 3
+        $samples = 30
+        $readFs = [System.IO.File]::Open($testFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+        for ($i = 0; $i -lt ($warmup + $samples); $i++) {
+            $pos = $rng.Next(0, [int]($fileSize - 4096))
+            $readFs.Position = $pos
+            $buf = New-Object byte[] 4096
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $readFs.Read($buf, 0, 4096) | Out-Null
+            $sw.Stop()
+            if ($i -ge $warmup) { $times += (Get-ElapsedMicroseconds $sw) }
+        }
+        $readFs.Close(); $readFs = $null
+        Remove-Item $testFile -ErrorAction SilentlyContinue
+        $stats = Get-Statistics $times
+        $stats.Note = "Random 4KB read from 16MB file"
+        return $stats
+    } catch {
+        if ($fs) { $fs.Close() }
+        if ($readFs) { $readFs.Close() }
+        Remove-Item $testFile -ErrorAction SilentlyContinue
+        return @{Valid = $false; Note = "Random read test failed: $_"}
+    }
+}
+
+function Measure-DnsCachePerformance {
+    # Tests DNS cache optimization by measuring cold vs warm resolution
+    $target = "docs.microsoft.com"
+    try {
+        # Warm cache resolution
+        $warmTimes = @()
+        for ($i = 0; $i -lt 5; $i++) {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $null = [System.Net.Dns]::GetHostAddresses($target)
+            $sw.Stop()
+            $warmTimes += (Get-ElapsedMicroseconds $sw)
+            Start-Sleep -Milliseconds 50
+        }
+        $warmStats = Get-Statistics $warmTimes
+        # Clear DNS cache
+        Start-Process ipconfig -ArgumentList "/flushdns" -WindowStyle Hidden -Wait | Out-Null
+        Start-Sleep -Milliseconds 200
+        # Cold cache resolution
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $null = [System.Net.Dns]::GetHostAddresses($target)
+        $sw.Stop()
+        $coldTime = (Get-ElapsedMicroseconds $sw)
+        return @{
+            Valid = $true
+            Mean = $warmStats.Mean
+            WarmMean = $warmStats.Mean
+            ColdTime = $coldTime
+            WarmCV = $warmStats.CV
+            Samples = $warmStats.Samples
+            StdDev = $warmStats.StdDev
+            Note = "DNS warm avg $($warmStats.Mean)us vs cold $coldTime`us"
+        }
+    } catch {
+        return @{Valid = $false; Note = "DNS cache test failed: $_"}
+    }
+}
+
+function Get-SystemResourceSnapshot {
+    # Snapshot of system resource usage
+    $proc = Get-Process -Id $PID
+    $allProcs = Get-Process
+    return @{
+        ProcessCount = $allProcs.Count
+        ThreadCount = ($allProcs | ForEach-Object { $_.Threads.Count } | Measure-Object -Sum).Sum
+        HandleCount = $proc.HandleCount
+        WorkingSetMB = [math]::Round($proc.WorkingSet64 / 1MB, 2)
+        PrivateMemoryMB = [math]::Round($proc.PrivateMemorySize64 / 1MB, 2)
+        GdiObjects = $proc.MainWindowHandle  # Not directly available, use proxy
+        Note = "System resource snapshot at profile time"
+    }
+}
+
+function Get-ServiceConfigurationState {
+    # Count services by start type - we disable many
+    $svcs = Get-Service
+    $disabled = ($svcs | Where-Object { $_.StartType -eq 'Disabled' }).Count
+    $manual = ($svcs | Where-Object { $_.StartType -eq 'Manual' }).Count
+    $auto = ($svcs | Where-Object { $_.StartType -eq 'Automatic' }).Count
+    $running = ($svcs | Where-Object { $_.Status -eq 'Running' }).Count
+    return @{
+        Disabled = $disabled
+        Manual = $manual
+        Automatic = $auto
+        Running = $running
+        Total = $svcs.Count
+        Note = "Service configuration state"
+    }
+}
+
 function Measure-ExplorerColdStart {
     # Real Explorer.exe cold start (invasive - optional)
     if (-not $ExploreRestart) {
@@ -207,6 +424,68 @@ function Measure-ExplorerColdStart {
         WindowHandle = $proc.MainWindowHandle
         Note       = "Time from process start to window ready"
     }
+}
+
+function Get-SystemForensics {
+    # SAFELY captures system state for anomaly investigation
+    # All operations are READ-ONLY - never modifies anything
+    param([string]$TriggerReason)
+    $forensics = @{}
+    $forensics.CaptureTime = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    $forensics.Trigger = $TriggerReason
+    
+    # 1. All running processes with resource usage
+    try {
+        $forensics.Processes = Get-Process | Select-Object Name, Id, CPU, WorkingSet64, PagedMemorySize64, Threads, Path, Company, @{N="CpuPercent";E={if($_.CPU -gt 0){[math]::Round($_.CPU,2)}else{0}}} | Sort-Object -Property CPU -Descending | Select-Object -First 30 | ForEach-Object { @{Name=$_.Name; Id=$_.Id; CPU=$_.CpuPercent; WorkingSetMB=[math]::Round($_.WorkingSet64/1MB,1); Threads=$_.Threads.Count; Path=$_.Path} }
+    } catch { $forensics.Processes = "ERROR: $_" }
+    
+    # 2. Top CPU consumers in last second
+    try {
+        $counters = Get-Counter '\Process(*)\% Processor Time' -MaxSamples 1 -ErrorAction SilentlyContinue
+        $forensics.TopCpu = $counters.CounterSamples | Where-Object { $_.InstanceName -notin '_total','idle' } | Sort-Object -Property CookedValue -Descending | Select-Object -First 10 | ForEach-Object { @{Process=$_.InstanceName; CpuPercent=[math]::Round($_.CookedValue,1)} }
+    } catch { $forensics.TopCpu = "ERROR: $_" }
+    
+    # 3. Network connections (read-only)
+    try {
+        $forensics.NetConnections = Get-NetTCPConnection -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { @{Local=$_.LocalAddress; Remote=$_.RemoteAddress; State=$_.State; OwningProcess=$_.OwningProcess} }
+    } catch { $forensics.NetConnections = "ERROR: $_" }
+    
+    # 4. Recent Windows events (last 2 minutes)
+    try {
+        $startTime = (Get-Date).AddMinutes(-2)
+        $forensics.RecentEvents = Get-WinEvent -FilterHashtable @{LogName='System','Application'; StartTime=$startTime} -MaxEvents 20 -ErrorAction SilentlyContinue | ForEach-Object { @{Time=$_.TimeCreated.ToString("HH:mm:ss"); Level=$_.LevelDisplayName; Source=$_.ProviderName; Id=$_.Id; Message=($_.Message -replace '`r`n',' ').Substring(0,[Math]::Min(120,($_.Message -replace '`r`n',' ').Length))} }
+    } catch { $forensics.RecentEvents = "ERROR: $_" }
+    
+    # 5. Services that recently changed
+    try {
+        $forensics.ServiceStates = Get-Service | Where-Object { $_.Status -ne 'Running' -and $_.StartType -eq 'Automatic' } | Select-Object -First 10 | ForEach-Object { @{Name=$_.Name; Status=$_.Status; StartType=$_.StartType} }
+    } catch { $forensics.ServiceStates = "ERROR: $_" }
+    
+    # 6. Windows Defender status (read-only)
+    try {
+        $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
+        $forensics.Defender = @{RealTimeProtection=$defender.RealTimeProtectionEnabled; BehaviorMonitor=$defender.BehaviorMonitorEnabled; QuickScanAge=$defender.QuickScanAge}
+    } catch { $forensics.Defender = @{Note="Unable to query Defender status"} }
+    
+    # 7. Windows Update active status
+    try {
+        $wu = Get-Service wuauserv -ErrorAction SilentlyContinue
+        $forensics.WindowsUpdate = @{Status=$wu.Status; StartType=$wu.StartType}
+    } catch { $forensics.WindowsUpdate = @{Note="Unable to query WU"} }
+    
+    # 8. Disk queue depth
+    try {
+        $disk = Get-Counter '\PhysicalDisk(_Total)\Current Disk Queue Length' -MaxSamples 1 -ErrorAction SilentlyContinue
+        $forensics.DiskQueue = [math]::Round($disk.CounterSamples[0].CookedValue, 2)
+    } catch { $forensics.DiskQueue = "ERROR" }
+    
+    return $forensics
+}
+
+function Save-ForensicsReport($forensics, $profileFile) {
+    $forensicsFile = $profileFile -replace '\.json$', '_FORENSICS.json'
+    $forensics | ConvertTo-Json -Depth 5 | Set-Content -Path $forensicsFile -Encoding UTF8
+    Write-Host "  Forensics saved: $forensicsFile" -ForegroundColor Magenta
 }
 
 function Get-OptimizationStates {
@@ -304,9 +583,17 @@ function Show-StatLine($label, $stats, $unit = "us") {
         return
     }
     $u = if ($unit -eq "ms") { "ms" } else { "us" }
-    $meanVal = if ($stats.Mean -ne $null) { $stats.Mean } else { $stats }
+    $meanVal = if ($null -ne $stats.Mean) { $stats.Mean } else { $stats }
+    $outlierNote = if ($stats.OutliersRejected -gt 0) { "  outliers=$($stats.OutliersRejected)" } else { "" }
+    $cvNote = if ($stats.CV -gt 25) { "  CV=$($stats.CV)%" } else { "" }
+    $warn = ""
+    if ($stats.OutliersRejected -gt 5) { $warn = " [FORENSICS TRIGGERED]" }
+    elseif ($stats.CV -gt 50) { $warn = " [HIGH VARIANCE]" }
     Write-Host "    $label" -ForegroundColor White -NoNewline
-    Write-Host "  mean=$meanVal$u  median=$($stats.Median)$u  stddev=$($stats.StdDev)$u  n=$($stats.Samples)" -ForegroundColor Gray
+    Write-Host "  mean=$meanVal$u  median=$($stats.Median)$u  stddev=$($stats.StdDev)$u  n=$($stats.Samples)$outlierNote$cvNote$warn" -ForegroundColor Gray
+    if ($warn -and -not $Silent) {
+        Write-Host "      -> System contamination suspected during this test" -ForegroundColor DarkYellow
+    }
 }
 
 function Show-OptimizationStatus($optStates) {
@@ -330,7 +617,7 @@ function Save-Profile($data, $path) {
     }
 }
 
-function Load-Profile($path) {
+function Import-ProfileData($path) {
     if (-not (Test-Path $path)) {
         Write-Host "ERROR: Profile not found: $path" -ForegroundColor Red
         exit 1
@@ -361,6 +648,49 @@ function Compare-BootTime($before, $after) {
         $arrow = if ($delta -lt 0) { "FASTER" } else { "SLOWER" }
         Write-Host "    Boot Time  $($before.TotalBootMs)ms -> $($after.TotalBootMs)ms  ($arrow by $delta ms / $pct%)" -ForegroundColor $color
     }
+}
+
+function Show-ComparisonTable($before, $after) {
+    Show-SectionHeader "Performance Delta Summary"
+    $rows = @()
+    $tests = @(
+        @{Label="Network RTT"; Before=$before.NetworkLatency; After=$after.NetworkLatency; Unit="ms"; Reboot=$true},
+        @{Label="Process Creation"; Before=$before.ProcessCreation; After=$after.ProcessCreation; Unit="us"; Reboot=$false},
+        @{Label="Memory Commit"; Before=$before.MemoryCommit; After=$after.MemoryCommit; Unit="us"; Reboot=$false},
+        @{Label="Registry Read"; Before=$before.RegistryRead; After=$after.RegistryRead; Unit="us"; Reboot=$false},
+        @{Label="File Write"; Before=$before.FileWrite; After=$after.FileWrite; Unit="us"; Reboot=$false},
+        @{Label="DNS Resolution"; Before=$before.DnsResolution; After=$after.DnsResolution; Unit="us"; Reboot=$false},
+        @{Label="TCP Connect"; Before=$before.TcpConnect; After=$after.TcpConnect; Unit="us"; Reboot=$true},
+        @{Label="Service Enum"; Before=$before.ServiceEnum; After=$after.ServiceEnum; Unit="us"; Reboot=$false},
+        @{Label="Random File Read"; Before=$before.RandomFileRead; After=$after.RandomFileRead; Unit="us"; Reboot=$false},
+        @{Label="DNS Cache Warm"; Before=$before.DnsCache; After=$after.DnsCache; Unit="us"; Reboot=$true}
+    )
+    foreach ($t in $tests) {
+        $b = $t.Before; $a = $t.After
+        if (-not $b -or -not $a -or $b.Valid -eq $false -or $a.Valid -eq $false) {
+            $rows += [PSCustomObject]@{
+                Test = $t.Label
+                Before = "N/A"; After = "N/A"; Delta = "N/A"; Pct = "N/A"
+                Status = "---"; Reboot = if($t.Reboot){"*"}else{""}
+            }
+            continue
+        }
+        $delta = [math]::Round($a.Mean - $b.Mean, 2)
+        $pct = if ($b.Mean -ne 0) { [math]::Round(($delta / $b.Mean) * 100, 1) } else { 0 }
+        $improved = $delta -lt 0
+        $status = if ($improved) { "IMPROVED" } else { "WORSENED" }
+        $rows += [PSCustomObject]@{
+            Test = $t.Label
+            Before = "$($b.Mean) $($t.Unit)"
+            After = "$($a.Mean) $($t.Unit)"
+            Delta = "$delta $($t.Unit)"
+            Pct = "$pct%"
+            Status = $status
+            Reboot = if($t.Reboot){"*"}else{""}
+        }
+    }
+    $rows | Format-Table Test, Before, After, Delta, Pct, Status, Reboot -AutoSize | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
+    Write-Host "    * = Requires reboot for registry changes to take effect" -ForegroundColor Yellow
 }
 
 function Compare-OptimizationStates($before, $after) {
@@ -394,7 +724,7 @@ if (-not $Silent) {
 }
 
 # Gather all measurements
-$Profile = @{
+$ProfileData = @{
     Timestamp   = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
     Mode        = $Mode
     Computer    = $env:COMPUTERNAME
@@ -403,99 +733,198 @@ $Profile = @{
 
 # 1. Boot Time (from Windows Event Log - actual measured data)
 if (-not $Silent) { Show-SectionHeader "1. Boot Time (Windows-measured)" }
-$Profile.BootTime = Measure-BootTime
-if ($Profile.BootTime.Valid) {
-    Show-StatLine "MainPathBoot" @{Mean = $Profile.BootTime.MainPathBootMs; Median = $Profile.BootTime.MainPathBootMs; StdDev = 0; Samples = 1} "ms"
-    Show-StatLine "BootPostBoot" @{Mean = $Profile.BootTime.BootPostBootMs; Median = $Profile.BootTime.BootPostBootMs; StdDev = 0; Samples = 1} "ms"
-    Show-StatLine "TotalBoot" @{Mean = $Profile.BootTime.TotalBootMs; Median = $Profile.BootTime.TotalBootMs; StdDev = 0; Samples = 1} "ms"
-    Write-Host "    Boot recorded: $($Profile.BootTime.BootDate)" -ForegroundColor Gray
+$ProfileData.BootTime = Measure-BootTime
+if ($ProfileData.BootTime.Valid) {
+    Show-StatLine "MainPathBoot" @{Mean = $ProfileData.BootTime.MainPathBootMs; Median = $ProfileData.BootTime.MainPathBootMs; StdDev = 0; Samples = 1} "ms"
+    Show-StatLine "BootPostBoot" @{Mean = $ProfileData.BootTime.BootPostBootMs; Median = $ProfileData.BootTime.BootPostBootMs; StdDev = 0; Samples = 1} "ms"
+    Show-StatLine "TotalBoot" @{Mean = $ProfileData.BootTime.TotalBootMs; Median = $ProfileData.BootTime.TotalBootMs; StdDev = 0; Samples = 1} "ms"
+    Write-Host "    Boot recorded: $($ProfileData.BootTime.BootDate)" -ForegroundColor Gray
 } else {
-    Write-Host "    $($Profile.BootTime.Note)" -ForegroundColor Yellow
+    Write-Host "    $($ProfileData.BootTime.Note)" -ForegroundColor Yellow
 }
 
 # 2. Network Latency (actual ICMP RTT to gateway)
 if (-not $Silent) { Show-SectionHeader "2. Network RTT (ICMP to gateway)" }
-$Profile.NetworkLatency = Measure-NetworkLatency
-if ($Profile.NetworkLatency.Valid) {
-    Show-StatLine "RTT" $Profile.NetworkLatency "ms"
-    Write-Host "    Target: $($Profile.NetworkLatency.Target)  Loss: $($Profile.NetworkLatency.PacketLossPercent)%" -ForegroundColor Gray
+$ProfileData.NetworkLatency = Measure-NetworkLatency
+if ($ProfileData.NetworkLatency.Valid) {
+    Show-StatLine "RTT" $ProfileData.NetworkLatency "ms"
+    Write-Host "    Target: $($ProfileData.NetworkLatency.Target)  Loss: $($ProfileData.NetworkLatency.PacketLossPercent)%" -ForegroundColor Gray
     Write-Host "    NOTE: TCP registry tweaks require REBOOT to affect this measurement." -ForegroundColor Yellow
 } else {
-    Write-Host "    $($Profile.NetworkLatency.Note)" -ForegroundColor Yellow
+    Write-Host "    $($ProfileData.NetworkLatency.Note)" -ForegroundColor Yellow
 }
 
 # 3. Process Creation Latency (actual CreateProcess)
 if (-not $Silent) { Show-SectionHeader "3. Process Creation Latency" }
-$Profile.ProcessCreation = Measure-ProcessCreationLatency
-Show-StatLine "CreateProcess" $Profile.ProcessCreation
+$ProfileData.ProcessCreation = Measure-ProcessCreationLatency
+Show-StatLine "CreateProcess" $ProfileData.ProcessCreation
 
 # 4. Memory Commit Latency (actual AllocHGlobal/FreeHGlobal)
 if (-not $Silent) { Show-SectionHeader "4. Memory Commit Latency" }
-$Profile.MemoryCommit = Measure-MemoryCommitLatency
-Show-StatLine "Alloc+Free 4KB" $Profile.MemoryCommit
+$ProfileData.MemoryCommit = Measure-MemoryCommitLatency
+Show-StatLine "Alloc+Free 4KB" $ProfileData.MemoryCommit
 
 # 5. Registry Read Latency (actual RegQueryValueEx)
 if (-not $Silent) { Show-SectionHeader "5. Registry Read Latency" }
-$Profile.RegistryRead = Measure-RegistryReadLatency
-Show-StatLine "RegQueryValueEx" $Profile.RegistryRead
+$ProfileData.RegistryRead = Measure-RegistryReadLatency
+Show-StatLine "RegQueryValueEx" $ProfileData.RegistryRead
 
 # 6. File Write Latency (actual WriteFile+Flush)
 if (-not $Silent) { Show-SectionHeader "6. File Write Latency" }
-$Profile.FileWrite = Measure-FileWriteLatency
-Show-StatLine "Write+Flush 1MB" $Profile.FileWrite
+$ProfileData.FileWrite = Measure-FileWriteLatency
+Show-StatLine "Write+Flush 1MB" $ProfileData.FileWrite
 
 # 7. Explorer Cold Start (optional, invasive)
 if (-not $Silent) { Show-SectionHeader "7. Explorer Cold Start" }
-$Profile.ExplorerStart = Measure-ExplorerColdStart
-if ($Profile.ExplorerStart.Valid) {
-    Write-Host "    Startup time: $($Profile.ExplorerStart.StartupUs) ms" -ForegroundColor Green
+$ProfileData.ExplorerStart = Measure-ExplorerColdStart
+if ($ProfileData.ExplorerStart.Valid) {
+    Write-Host "    Startup time: $($ProfileData.ExplorerStart.StartupUs) ms" -ForegroundColor Green
 } else {
-    Write-Host "    $($Profile.ExplorerStart.Note)" -ForegroundColor Yellow
+    Write-Host "    $($ProfileData.ExplorerStart.Note)" -ForegroundColor Yellow
 }
 
-# 8. Optimization States (registry value audit)
-if (-not $Silent) { Show-SectionHeader "8. Registry Optimization Audit" }
-$Profile.OptimizationStates = Get-OptimizationStates
-Show-OptimizationStatus $Profile.OptimizationStates
+# 8. DNS Resolution Latency
+if (-not $Silent) { Show-SectionHeader "8. DNS Resolution Latency" }
+$ProfileData.DnsResolution = Measure-DnsResolutionLatency
+Show-StatLine "Resolve localhost" $ProfileData.DnsResolution
+
+# 9. TCP Connect Latency
+if (-not $Silent) { Show-SectionHeader "9. TCP Connect Latency (localhost)" }
+$ProfileData.TcpConnect = Measure-TcpConnectLatency
+if ($ProfileData.TcpConnect.Valid) {
+    Show-StatLine "TCP connect+close" $ProfileData.TcpConnect
+    Write-Host "    NOTE: TCP stack registry tweaks require REBOOT to affect this." -ForegroundColor Yellow
+} else {
+    Write-Host "    $($ProfileData.TcpConnect.Note)" -ForegroundColor Yellow
+}
+
+# 10. Service Enumeration Latency
+if (-not $Silent) { Show-SectionHeader "10. Service Enumeration Latency" }
+$ProfileData.ServiceEnum = Measure-ServiceEnumerationLatency
+Show-StatLine "Get-Service query" $ProfileData.ServiceEnum
+
+# 11. Random File Read Latency
+if (-not $Silent) { Show-SectionHeader "11. Random File Read Latency" }
+$ProfileData.RandomFileRead = Measure-RandomFileReadLatency
+Show-StatLine "Random 4KB read" $ProfileData.RandomFileRead
+
+# 12. DNS Cache Performance (cold vs warm)
+if (-not $Silent) { Show-SectionHeader "12. DNS Cache Performance" }
+$ProfileData.DnsCache = Measure-DnsCachePerformance
+if ($ProfileData.DnsCache.Valid) {
+    Write-Host "    Warm cache avg: $($ProfileData.DnsCache.WarmMean)us  Cold: $($ProfileData.DnsCache.ColdTime)us  CV=$($ProfileData.DnsCache.WarmCV)%" -ForegroundColor Gray
+    Write-Host "    NOTE: DNS cache size/ttl tweaks require REBOOT to affect this." -ForegroundColor Yellow
+} else {
+    Write-Host "    $($ProfileData.DnsCache.Note)" -ForegroundColor Yellow
+}
+
+# 13. System Resource Snapshot
+if (-not $Silent) { Show-SectionHeader "13. System Resource Snapshot" }
+$ProfileData.Resources = Get-SystemResourceSnapshot
+Write-Host "    Processes: $($ProfileData.Resources.ProcessCount)  Threads: $($ProfileData.Resources.ThreadCount)  Handles: $($ProfileData.Resources.HandleCount)" -ForegroundColor Gray
+Write-Host "    WorkingSet: $($ProfileData.Resources.WorkingSetMB)MB  Private: $($ProfileData.Resources.PrivateMemoryMB)MB" -ForegroundColor Gray
+
+# 14. Service Configuration State
+if (-not $Silent) { Show-SectionHeader "14. Service Configuration State" }
+$ProfileData.Services = Get-ServiceConfigurationState
+Write-Host "    Disabled: $($ProfileData.Services.Disabled)  Manual: $($ProfileData.Services.Manual)  Auto: $($ProfileData.Services.Automatic)  Running: $($ProfileData.Services.Running) / $($ProfileData.Services.Total)" -ForegroundColor Gray
+
+# 15. Optimization States (registry value audit)
+if (-not $Silent) { Show-SectionHeader "15. Registry Optimization Audit" }
+$ProfileData.OptimizationStates = Get-OptimizationStates
+Show-OptimizationStatus $ProfileData.OptimizationStates
+
+# Auto-detect baseline for Compare mode
+if ($AutoCompare -and -not $BaselineFile) {
+    $latestBaseline = Get-ChildItem "$ProfileDir\Profile_Baseline_*.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($latestBaseline) {
+        $BaselineFile = $latestBaseline.FullName
+        if (-not $Silent) { Write-Host "  Auto-selected baseline: $($latestBaseline.Name)" -ForegroundColor Cyan }
+    }
+}
 
 # Save profile
-Save-Profile $Profile $OutputFile
+Save-Profile $ProfileData $OutputFile
+
+# Forensics: Check for contamination and capture system state
+$contaminatedTests = @()
+$testFields = @('NetworkLatency','ProcessCreation','MemoryCommit','RegistryRead','FileWrite','DnsResolution','TcpConnect','ServiceEnum','RandomFileRead','DnsCache')
+foreach ($tf in $testFields) {
+    $t = $ProfileData.$tf
+    if ($t -and $t.CV -gt 50) { $contaminatedTests += "$tf (CV=$($t.CV)%)" }
+    elseif ($t -and $t.OutliersRejected -gt 5) { $contaminatedTests += "$tf (outliers=$($t.OutliersRejected))" }
+}
+if ($contaminatedTests.Count -gt 0) {
+    $reason = "Contamination detected in: $($contaminatedTests -join ', ')"
+    if (-not $Silent) {
+        Write-Host ""
+        Write-Host "  [ANOMALY DETECTED] Capturing system forensics..." -ForegroundColor Magenta
+    }
+    $forensics = Get-SystemForensics -TriggerReason $reason
+    Save-ForensicsReport $forensics $OutputFile
+    if (-not $Silent) {
+        Write-Host "    Top CPU at capture: $(($forensics.TopCpu | Select-Object -First 3 | ForEach-Object { "$($_.Process)=$($_.CpuPercent)%" }) -join ', ')" -ForegroundColor Gray
+        Write-Host "    Disk queue: $($forensics.DiskQueue)" -ForegroundColor Gray
+    }
+}
 
 # ============================================================================
 # COMPARE MODE
 # ============================================================================
 
 if ($Mode -eq "Compare" -and $BaselineFile) {
-    $Baseline = Load-Profile $BaselineFile
+    $Baseline = Import-ProfileData $BaselineFile
     if (-not $Silent) {
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Cyan
         Write-Host "  COMPARISON REPORT" -ForegroundColor Cyan
         Write-Host "  Baseline: $($Baseline.Timestamp)" -ForegroundColor Gray
-        Write-Host "  Current:  $($Profile.Timestamp)" -ForegroundColor Gray
+        Write-Host "  Current:  $($ProfileData.Timestamp)" -ForegroundColor Gray
         Write-Host "========================================" -ForegroundColor Cyan
         
-        Compare-BootTime $Baseline.BootTime $Profile.BootTime
-        Compare-Stats $Baseline.NetworkLatency $Profile.NetworkLatency "Network RTT" "ms"
-        Compare-Stats $Baseline.ProcessCreation $Profile.ProcessCreation "Process Creation" "us"
-        Compare-Stats $Baseline.MemoryCommit $Profile.MemoryCommit "Memory Commit" "us"
-        Compare-Stats $Baseline.RegistryRead $Profile.RegistryRead "Registry Read" "us"
-        Compare-Stats $Baseline.FileWrite $Profile.FileWrite "File Write" "us"
-        if ($Baseline.ExplorerStart.Valid -and $Profile.ExplorerStart.Valid) {
+        Show-ComparisonTable $Baseline $ProfileData
+        Compare-BootTime $Baseline.BootTime $ProfileData.BootTime
+        if ($Baseline.ExplorerStart.Valid -and $ProfileData.ExplorerStart.Valid) {
             $bd = $Baseline.ExplorerStart.StartupUs
-            $ad = $Profile.ExplorerStart.StartupUs
+            $ad = $ProfileData.ExplorerStart.StartupUs
             $delta = [math]::Round($ad - $bd, 2)
             $pct = if ($bd -gt 0) { [math]::Round(($delta / $bd) * 100, 1) } else { 0 }
             $color = if ($delta -lt 0) { "Green" } else { "Red" }
             Write-Host "    Explorer Start  ${bd}ms -> ${ad}ms  ($delta ms / $pct%)" -ForegroundColor $color
         }
-        Compare-OptimizationStates $Baseline.OptimizationStates $Profile.OptimizationStates
+        # Service Configuration comparison
+        Show-SectionHeader "Service Configuration Delta"
+        $bs = $Baseline.Services; $as = $ProfileData.Services
+        if ($bs -and $as) {
+            $svcDelta = $as.Disabled - $bs.Disabled
+            $svcColor = if ($svcDelta -gt 0) { "Green" } else { "White" }
+            Write-Host "    Disabled services: $($bs.Disabled) -> $($as.Disabled) (delta: $svcDelta)" -ForegroundColor $svcColor
+            Write-Host "    Manual services: $($bs.Manual) -> $($as.Manual)" -ForegroundColor Gray
+            Write-Host "    Auto services: $($bs.Automatic) -> $($as.Automatic)" -ForegroundColor Gray
+            Write-Host "    Running: $($bs.Running) -> $($as.Running)" -ForegroundColor Gray
+        }
+        # Resource comparison
+        Show-SectionHeader "Resource Usage Delta"
+        $br = $Baseline.Resources; $ar = $ProfileData.Resources
+        if ($br -and $ar) {
+            Write-Host "    Processes: $($br.ProcessCount) -> $($ar.ProcessCount)" -ForegroundColor Gray
+            Write-Host "    Threads: $($br.ThreadCount) -> $($ar.ThreadCount)" -ForegroundColor Gray
+            Write-Host "    WorkingSet: $($br.WorkingSetMB)MB -> $($ar.WorkingSetMB)MB" -ForegroundColor Gray
+        }
+        # DNS Cache comparison
+        if ($Baseline.DnsCache.Valid -and $ProfileData.DnsCache.Valid) {
+            Show-SectionHeader "DNS Cache Delta"
+            $bdns = $Baseline.DnsCache; $adns = $ProfileData.DnsCache
+            Write-Host "    Warm cache: $($bdns.WarmMean)us -> $($adns.WarmMean)us" -ForegroundColor Gray
+            Write-Host "    Cold cache: $($bdns.ColdTime)us -> $($adns.ColdTime)us" -ForegroundColor Gray
+        }
+        Compare-OptimizationStates $Baseline.OptimizationStates $ProfileData.OptimizationStates
         
         Write-Host ""
         Write-Host "  Green = improved (lower latency)" -ForegroundColor Green
         Write-Host "  Red   = worsened (higher latency)" -ForegroundColor Red
-        Write-Host "  NOTE: Registry changes marked [REBOOT REQUIRED] need a restart" -ForegroundColor Yellow
-        Write-Host "        before their performance impact is measurable." -ForegroundColor Yellow
+        Write-Host "  NOTE: Tests marked * require a system REBOOT before changes are measurable." -ForegroundColor Yellow
+        Write-Host "        Same-session measurements are only valid for HKCU/Explorer changes." -ForegroundColor Yellow
     }
 }
 
@@ -509,7 +938,8 @@ if (-not $Silent) {
     Write-Host "Usage:" -ForegroundColor Yellow
     Write-Host "  Baseline (before W11LatencyFix):  .\W11Profiler.ps1 -Mode Baseline" -ForegroundColor Gray
     Write-Host "  Post-Reboot (after restart):        .\W11Profiler.ps1 -Mode PostReboot" -ForegroundColor Gray
-    Write-Host "  Compare two runs:                   .\W11Profiler.ps1 -Mode Compare -BaselineFile <path>" -ForegroundColor Gray
+    Write-Host "  Compare with auto baseline:         .\W11Profiler.ps1 -Mode Compare -AutoCompare" -ForegroundColor Gray
+    Write-Host "  Compare specific file:              .\W11Profiler.ps1 -Mode Compare -BaselineFile <path>" -ForegroundColor Gray
     Write-Host ""
     Read-Host "Press ENTER to exit"
 }
