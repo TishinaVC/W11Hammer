@@ -61,10 +61,13 @@ function Write-Log {
 
 function Invoke-RestorePoint {
     try {
-        $restorePoints = Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Sort-Object -Property DateTime -Descending | Select-Object -First 1
-        if ($restorePoints -and ((Get-Date) - $restorePoints.DateTime).TotalMinutes -lt 5) {
-            Write-Log "Recent restore point exists, skipping" "SKIP"
-            return
+        $rp = Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Sort-Object -Property @{Expression={$_.DateTime}; Ascending=$false} | Select-Object -First 1
+        if ($rp -and $rp.DateTime) {
+            $rpTime = [DateTime]::Parse($rp.DateTime)
+            if (((Get-Date) - $rpTime).TotalMinutes -lt 5) {
+                Write-Log "Recent restore point exists, skipping" "SKIP"
+                return
+            }
         }
         Checkpoint-Computer -Description "W11LatencyFix-$Timestamp" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop | Out-Null
         Write-Log "System Restore Point created" "SUCCESS"
