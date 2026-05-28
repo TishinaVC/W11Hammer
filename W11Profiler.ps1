@@ -58,8 +58,8 @@ function Get-Statistics {
     $q1 = $sorted[$q1Idx]
     $q3 = $sorted[$q3Idx]
     $iqr = $q3 - $q1
-    $lower = $q1 - (1.5 * $iqr)
-    $upper = $q3 + (1.5 * $iqr)
+    $lower = $q1 - (2.0 * $iqr)
+    $upper = $q3 + (2.0 * $iqr)
     $filtered = $Values | Where-Object { $_ -ge $lower -and $_ -le $upper }
     $rejected = $n - $filtered.Count
     $sortedF = $filtered | Sort-Object
@@ -103,7 +103,7 @@ function Measure-MicroBenchmark {
         [double]$MaxCV = 25.0
     )
     # Wait for system idle
-    $idleCheck = Test-SystemIdle -Seconds 2 -MaxCpuPercent 15
+    $idleCheck = Test-SystemIdle -Seconds 5 -MaxCpuPercent 5
     if (-not $idleCheck.Idle -and -not $Silent) {
         Write-Host "    [WARN] System CPU was $($idleCheck.Cpu)% - measurements may be noisy" -ForegroundColor DarkYellow
     }
@@ -231,7 +231,7 @@ function Measure-FileWriteLatency {
     $runs = 10
     for ($r = 0; $r -lt ($warmup + $runs); $r++) {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $fs = [System.IO.File]::OpenWrite($testFile)
+        $fs = [System.IO.File]::Open($testFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         for ($i = 0; $i -lt 256; $i++) {  # 1MB total
             $fs.Write($data, 0, 4096)
             $fs.Flush()
