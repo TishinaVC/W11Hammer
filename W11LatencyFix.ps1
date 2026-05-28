@@ -1,5 +1,5 @@
 #Requires -Version 5.1
-param([switch]$WhatIf,[switch]$AcceptTerms,[switch]$Silent)
+param([switch]$WhatIf,[switch]$AcceptTerms,[switch]$Silent,[switch]$NoRestart)
 
 # Interactive Terms Acceptance
 if(-not$WhatIf-and-not$AcceptTerms-and-not$Silent){
@@ -77,25 +77,6 @@ function Invoke-RestorePoint {
     }
 }
 
-function Test-NetworkLatency {
-    param([string]$Label)
-    try {
-        $test = Test-Connection -ComputerName "8.8.8.8" -Count 4 -ErrorAction Stop
-        $avg = [math]::Round(($test | Measure-Object ResponseTime -Average).Average, 1)
-        $min = ($test | Measure-Object ResponseTime -Minimum).Minimum
-        $max = ($test | Measure-Object ResponseTime -Maximum).Maximum
-        $loss = 4 - $test.Count
-        Write-Log "$Label Latency: ${avg}ms (min:${min}ms max:${max}ms loss:$loss)" "INFO"
-        if (-not $Silent) {
-            Write-Host "    Latency: ${avg}ms (min:${min}ms max:${max}ms loss:$loss)" -ForegroundColor $(if($avg -lt 50){"Green"}elseif($avg -lt 100){"Yellow"}else{"Red"})
-        }
-        return $avg
-    } catch {
-        Write-Log "$Label Latency test failed: $_" "WARN"
-        return $null
-    }
-}
-
 function Set-SafeRegValue {
     param([string]$Path,[string]$Name,$Value,[string]$Type="DWord")
     try{
@@ -126,10 +107,6 @@ Write-Log "Starting..."
 # Create System Restore Point
 if(-not$Silent){Write-Host "`nCreating System Restore Point..." -ForegroundColor Cyan}
 Invoke-RestorePoint
-
-# Baseline Latency Test
-if(-not$Silent){Write-Host "`nBaseline Network Test..." -ForegroundColor Cyan}
-$BaselineLatency = Test-NetworkLatency "Before"
 
 # Section 1: TCP
 if(-not$Silent){Write-Host "`n[1/12] TCP Network" -ForegroundColor Cyan}
@@ -228,18 +205,6 @@ Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\
 Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 8
 Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Priority" 6
 
-# After-Optimization Latency Test
-if(-not$Silent){Write-Host "`nAfter-Optimization Network Test..." -ForegroundColor Cyan}
-$AfterLatency = Test-NetworkLatency "After"
-
-# Compare Results
-if(-not$Silent -and $null -ne $BaselineLatency -and $null -ne $AfterLatency){
-    $diff = [math]::Round($BaselineLatency - $AfterLatency, 1)
-    $color = if($diff -gt 0){"Green"}elseif($diff -lt 0){"Red"}else{"Yellow"}
-    $arrow = if($diff -gt 0){"-"}elseif($diff -lt 0){"+"}else{"="}
-    Write-Host "    Change: ${arrow}${diff}ms" -ForegroundColor $color
-}
-
 # Generate UNDO
 if(-not$Silent){Write-Host "`nGenerating UNDO..." -ForegroundColor Cyan}
 if($Script:Changes.Count-gt0){
@@ -270,26 +235,46 @@ if(-not$Silent){
     Write-Host "  COMPLETE" -ForegroundColor Cyan
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host "  Changes: $($Script:Changes.Count)" -ForegroundColor $(if($Script:Changes.Count-gt0){"Green"}else{"Yellow"})
-    if($null -ne $BaselineLatency -and $null -ne $AfterLatency){
-        $diff = [math]::Round($BaselineLatency - $AfterLatency, 1)
-        $diffColor = if($diff -gt 0){"Green"}elseif($diff -lt 0){"Red"}else{"Yellow"}
-        Write-Host "  Latency: ${BaselineLatency}ms -> ${AfterLatency}ms" -ForegroundColor $diffColor
-    }
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
     if(-not$WhatIf-and$Script:Changes.Count-gt0){
         Write-Host "  UNDO: $UndoScript" -ForegroundColor Cyan
         Write-Host "  LOG:  $LogFile" -ForegroundColor Cyan
+        Write-Host ""
     }
-    if($WhatIf){Write-Host "`n  *** WHATIF-No changes made ***" -ForegroundColor Yellow}
-    Write-Host ""
-    Write-Host "  Restart for network changes" -ForegroundColor Yellow
+    if($WhatIf){Write-Host "  *** WHATIF-No changes made ***" -ForegroundColor Yellow;Write-Host ""}
+    Write-Host "  Restart required for network changes" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
 }
 
 Write-Log "Completed with $($Script:Changes.Count) changes"
 
-if(-not$Silent){
-    Write-Host ""
-    Read-Host "Press ENTER to exit"
+# Restart Prompt
+if(-not$NoRestart -and -not$WhatIf -and $Script:Changes.Count-gt0){
+    if(-not$Silent){
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Yellow
+        $response = Read-Host "Restart now for changes to take effect? (Y/N)"
+        if($response -eq "Y" -or $response -eq "y"){
+            Write-Host "Restarting in 5 seconds..." -ForegroundColor Red
+            for($i=5; $i -gt 0; $i--){
+                Write-Host "  $i..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 1
+            }
+            Restart-Computer -Force
+        } else {
+            Write-Host "Restart skipped. Run 'Restart-Computer' manually when ready." -ForegroundColor Yellow
+            Read-Host "Press ENTER to exit"
+        }
+    } else {
+        # Silent mode: auto-restart with warning
+        Write-Log "Auto-restarting in 10 seconds (use -NoRestart to skip)" "WARN"
+        Start-Sleep -Seconds 10
+        Restart-Computer -Force
+    }
+} else {
+    if(-not$Silent){
+        Write-Host ""
+        Read-Host "Press ENTER to exit"
+    }
 }
