@@ -219,7 +219,8 @@ if($Script:Changes.Count-gt0){
             $u+='try{Set-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Value ' + $valStr + ' -Force;Write-Host "  Restored: ' + $c.Name + ' = ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
         }
     }
-    $u+='`nWrite-Host "`nUNDO Complete - Restart recommended" -ForegroundColor Green' + "`n"
+    $u+='Write-Host ""' + "`n"
+    $u+='Write-Host "UNDO Complete - Restart recommended" -ForegroundColor Green' + "`n"
     $u+='Write-Host "Press ENTER to exit..." -ForegroundColor Cyan' + "`n"
     $u+='$null = Read-Host' + "`n"
     Set-Content -Path $UndoScript -Value $u -Encoding UTF8
