@@ -141,7 +141,7 @@ By running with `-AcceptTerms`, you acknowledge:
 ### Quick Start (Recommended)
 ```powershell
 # Accept terms and run (creates restore point automatically)
-.\W11LatencyFix-SAFE.ps1 -AcceptTerms
+.\W11LatencyFix.ps1 -AcceptTerms
 ```
 
 **What happens:**
@@ -154,7 +154,7 @@ By running with `-AcceptTerms`, you acknowledge:
 ### Preview Changes First (No Acceptance Required)
 ```powershell
 # Preview without applying changes
-.\W11LatencyFix-SAFE.ps1 -WhatIf
+.\W11LatencyFix.ps1 -WhatIf
 ```
 
 ### Undo All Changes
@@ -169,7 +169,7 @@ C:\W11LatencyFixLogs\Backups_YYYYMMDD_HHMMSS\UNDO_CHANGES.ps1
 
 | File | Purpose |
 |------|---------|
-| `W11LatencyFix-SAFE.ps1` | Main optimization script (1,845 lines, 217+ tweaks) |
+| `W11LatencyFix.ps1` | Main optimization script (216+ tweaks) |
 | `README.md` | This documentation |
 
 ---
@@ -247,7 +247,7 @@ Right-click → Properties → Check "Unblock"
 
 Or in PowerShell:
 ```powershell
-Unblock-File -Path ".\W11LatencyFix-SAFE.ps1"
+Unblock-File -Path ".\W11LatencyFix.ps1"
 ```
 
 ### "Access Denied"
