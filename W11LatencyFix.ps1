@@ -35,7 +35,7 @@ if(-not$isAdmin){
 }
 
 # Initialize
-$ScriptVersion="2.0.0-WORKING"
+$ScriptVersion="2.1.0"
 $LogDir="$env:SystemDrive\W11LatencyFixLogs"
 $Timestamp=Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile="$LogDir\LatencyFix_$Timestamp.log"
@@ -59,6 +59,43 @@ function Write-Log {
     }
 }
 
+function Invoke-RestorePoint {
+    try {
+        if ($WhatIf) {
+            Write-Log "Would create System Restore Point" "SKIP"
+            return
+        }
+        $restorePoints = Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Sort-Object -Property DateTime -Descending | Select-Object -First 1
+        if ($restorePoints -and ((Get-Date) - $restorePoints.DateTime).TotalMinutes -lt 5) {
+            Write-Log "Recent restore point exists, skipping" "SKIP"
+            return
+        }
+        Checkpoint-Computer -Description "W11LatencyFix-$Timestamp" -RestorePointType "MODIFY_SETTINGS" -ErrorAction Stop | Out-Null
+        Write-Log "System Restore Point created" "SUCCESS"
+    } catch {
+        Write-Log "Failed to create restore point: $_" "WARN"
+    }
+}
+
+function Test-NetworkLatency {
+    param([string]$Label)
+    try {
+        $test = Test-Connection -ComputerName "8.8.8.8" -Count 4 -ErrorAction Stop
+        $avg = [math]::Round(($test | Measure-Object ResponseTime -Average).Average, 1)
+        $min = ($test | Measure-Object ResponseTime -Minimum).Minimum
+        $max = ($test | Measure-Object ResponseTime -Maximum).Maximum
+        $loss = 4 - $test.Count
+        Write-Log "$Label Latency: ${avg}ms (min:${min}ms max:${max}ms loss:$loss)" "INFO"
+        if (-not $Silent) {
+            Write-Host "    Latency: ${avg}ms (min:${min}ms max:${max}ms loss:$loss)" -ForegroundColor $(if($avg -lt 50){"Green"}elseif($avg -lt 100){"Yellow"}else{"Red"})
+        }
+        return $avg
+    } catch {
+        Write-Log "$Label Latency test failed: $_" "WARN"
+        return $null
+    }
+}
+
 function Set-SafeRegValue {
     param([string]$Path,[string]$Name,$Value,[string]$Type="DWord")
     try{
@@ -79,12 +116,20 @@ function Set-SafeRegValue {
 if(-not$Silent){
     Clear-Host
     Write-Host "W11LatencyFix v$ScriptVersion" -ForegroundColor Cyan
-    Write-Host "216+ Network and Performance Optimizations" -ForegroundColor White
+    Write-Host "61 Verified Network and Performance Optimizations" -ForegroundColor White
     Write-Host ""
     if($WhatIf){Write-Host "*** WHATIF MODE-No changes ***" -ForegroundColor Yellow;Write-Host ""}
 }
 
 Write-Log "Starting..."
+
+# Create System Restore Point
+if(-not$Silent){Write-Host "`nCreating System Restore Point..." -ForegroundColor Cyan}
+Invoke-RestorePoint
+
+# Baseline Latency Test
+if(-not$Silent){Write-Host "`nBaseline Network Test..." -ForegroundColor Cyan}
+$BaselineLatency = Test-NetworkLatency "Before"
 
 # Section 1: TCP
 if(-not$Silent){Write-Host "`n[1/12] TCP Network" -ForegroundColor Cyan}
@@ -183,17 +228,38 @@ Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\
 Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 8
 Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Priority" 6
 
+# After-Optimization Latency Test
+if(-not$Silent){Write-Host "`nAfter-Optimization Network Test..." -ForegroundColor Cyan}
+$AfterLatency = Test-NetworkLatency "After"
+
+# Compare Results
+if(-not$Silent -and $null -ne $BaselineLatency -and $null -ne $AfterLatency){
+    $diff = [math]::Round($BaselineLatency - $AfterLatency, 1)
+    $color = if($diff -gt 0){"Green"}elseif($diff -lt 0){"Red"}else{"Yellow"}
+    $arrow = if($diff -gt 0){"-"}elseif($diff -lt 0){"+"}else{"="}
+    Write-Host "    Change: ${arrow}${diff}ms" -ForegroundColor $color
+}
+
 # Generate UNDO
 if(-not$Silent){Write-Host "`nGenerating UNDO..." -ForegroundColor Cyan}
 if($Script:Changes.Count-gt0){
     $u="# W11LatencyFix UNDO-Generated $(Get-Date)`n"
+    $u+='#Requires -Version 5.1' + "`n"
     $u+='$a=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)' + "`n"
-    $u+='if(-not$a){Start-Process powershell.exe -ArgumentList "-File `"$PSCommandPath`"" -Verb RunAs;exit}' + "`n"
+    $u+='if(-not$a){Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs;exit}' + "`n"
+    $u+='Write-Host "W11LatencyFix UNDO Script" -ForegroundColor Cyan' + "`n"
+    $u+='Write-Host "Reverting ' + $Script:Changes.Count + ' changes..." -ForegroundColor White' + "`n`n"
     foreach($c in $Script:Changes){
-        if($c.OldValue-eq"NOT_PRESENT"){$u+='try{Remove-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Force}catch{}' + "`n"}
-        else{$u+='try{Set-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Value ' + $c.OldValue + ' -Force}catch{}' + "`n"}
+        if($c.OldValue -eq "NOT_PRESENT"){
+            $u+='try{Remove-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -ErrorAction SilentlyContinue;Write-Host "  Removed: ' + $c.Name + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
+        } else {
+            $valStr = if($c.Type -eq "String"){'"' + $c.OldValue + '"'}else{$c.OldValue}
+            $u+='try{Set-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -Value ' + $valStr + ' -Force;Write-Host "  Restored: ' + $c.Name + ' = ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
+        }
     }
-    $u+='Write-Host "UNDO Complete" -ForegroundColor Green' + "`n"
+    $u+='`nWrite-Host "`nUNDO Complete - Restart recommended" -ForegroundColor Green' + "`n"
+    $u+='Write-Host "Press ENTER to exit..." -ForegroundColor Cyan' + "`n"
+    $u+='$null = Read-Host' + "`n"
     if(-not$WhatIf){Set-Content -Path $UndoScript -Value $u -Encoding UTF8;if(-not$Silent){Write-Host "  Created: $UndoScript" -ForegroundColor Green}}
     else{if(-not$Silent){Write-Host "  Would create UNDO with $($Script:Changes.Count) entries" -ForegroundColor Yellow}}
 }else{if(-not$Silent){Write-Host "  No changes to undo" -ForegroundColor Yellow}}
@@ -201,10 +267,20 @@ if($Script:Changes.Count-gt0){
 # Summary
 if(-not$Silent){
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "  COMPLETE: $($Script:Changes.Count) changes" -ForegroundColor $(if($Script:Changes.Count-gt0){"Green"}else{"Yellow"})
+    Write-Host "  COMPLETE" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  Changes: $($Script:Changes.Count)" -ForegroundColor $(if($Script:Changes.Count-gt0){"Green"}else{"Yellow"})
+    if($null -ne $BaselineLatency -and $null -ne $AfterLatency){
+        $diff = [math]::Round($BaselineLatency - $AfterLatency, 1)
+        $diffColor = if($diff -gt 0){"Green"}elseif($diff -lt 0){"Red"}else{"Yellow"}
+        Write-Host "  Latency: ${BaselineLatency}ms -> ${AfterLatency}ms" -ForegroundColor $diffColor
+    }
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    if(-not$WhatIf-and$Script:Changes.Count-gt0){Write-Host "  UNDO: $UndoScript" -ForegroundColor Cyan}
+    if(-not$WhatIf-and$Script:Changes.Count-gt0){
+        Write-Host "  UNDO: $UndoScript" -ForegroundColor Cyan
+        Write-Host "  LOG:  $LogFile" -ForegroundColor Cyan
+    }
     if($WhatIf){Write-Host "`n  *** WHATIF-No changes made ***" -ForegroundColor Yellow}
     Write-Host ""
     Write-Host "  Restart for network changes" -ForegroundColor Yellow
