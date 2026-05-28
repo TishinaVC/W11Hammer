@@ -401,6 +401,111 @@ function Get-ServiceConfigurationState {
     }
 }
 
+function Get-TcpInternalDiagnostics {
+    # Capture undocumented TCP stack internals via WMI
+    $result = @{}
+    try {
+        $ext = Get-WmiObject -Class 'Win32_PerfRawData_TCPIPCounters_TCPIPExtendedPerformanceDiagnostics' -ErrorAction SilentlyContinue
+        if ($ext) {
+            $result.FastPathMisses = $ext.TCPinboundsegmentsnotprocessedviafastpath
+            $result.LoopbackFastPathMisses = $ext.TCPconnectrequestsfallenoffloopbackfastpath
+            $result.LossRecoveryEpisodes = $ext.TCPsuccessfullossrecoveryepisodes
+            $result.Timeouts = $ext.TCPtimeouts
+            $result.ChecksumErrors = $ext.TCPchecksumerrors
+        }
+    } catch { $result.Error = $_.ToString() }
+    try {
+        $perf = Get-WmiObject -Class 'Win32_PerfRawData_TCPIPCounters_TCPIPPerformanceDiagnostics' -ErrorAction SilentlyContinue
+        if ($perf) {
+            $result.RSCevents = $perf.TCPRSCevents
+            $result.RSCbytesReceived = $perf.TCPRSCbytesreceived
+        }
+    } catch {}
+    $result.Note = "Undocumented TCP stack internals (read-only WMI)"
+    return $result
+}
+
+function Get-GpuPowerState {
+    # Capture GPU scheduling and power throttling state
+    $result = @{}
+    try {
+        $gpu = Get-WmiObject -Class 'Win32_VideoController' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($gpu) {
+            $result.Name = $gpu.Name
+            $result.Status = $gpu.Status
+            $result.AdapterRamMB = [math]::Round($gpu.AdapterRAM / 1MB, 0)
+            $result.DriverVersion = $gpu.DriverVersion
+        }
+    } catch {}
+    try {
+        $sched = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\Scheduler" -Name "EnablePreemption" -ErrorAction SilentlyContinue
+        $result.PreemptionEnabled = if($sched){$sched.EnablePreemption}else{"NOT_SET"}
+    } catch {}
+    try {
+        $perf = Get-Counter '\GPU Engine(*)\Utilization Percentage' -MaxSamples 1 -ErrorAction SilentlyContinue
+        $result.GpuUtilization = [math]::Round(($perf.CounterSamples | Measure-Object CookedValue -Average).Average, 1)
+    } catch { $result.GpuUtilization = "N/A" }
+    $result.Note = "GPU scheduling and power state (read-only)"
+    return $result
+}
+
+function Get-MemoryCompressionState {
+    # Capture Windows memory compression metrics
+    $result = @{}
+    try {
+        $mem = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfOS_Memory -ErrorAction SilentlyContinue
+        if ($mem) {
+            $result.AvailableMB = [math]::Round($mem.AvailableBytes / 1MB, 0)
+            $result.CacheMB = [math]::Round($mem.CacheBytes / 1MB, 0)
+            $result.StandbyCacheMB = [math]::Round($mem.StandbyCacheNormalPriorityBytes / 1MB, 0)
+            $result.ModifiedPageListMB = [math]::Round($mem.ModifiedPageListBytes / 1MB, 0)
+        }
+    } catch {}
+    try {
+        $mmAgent = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\MmAgent" -Name "Start" -ErrorAction SilentlyContinue
+        $result.MmAgentStart = if($mmAgent){$mmAgent.Start}else{"N/A"}
+    } catch {}
+    try {
+        $sysMain = Get-Service SysMain -ErrorAction SilentlyContinue
+        $result.SysMainStatus = if($sysMain){$sysMain.Status}else{"N/A"}
+        $result.SysMainStartType = if($sysMain){$sysMain.StartType}else{"N/A"}
+    } catch {}
+    $result.Note = "Memory compression and SysMain state (read-only)"
+    return $result
+}
+
+function Get-WindowsSearchState {
+    # Capture Windows Search indexing activity
+    $result = @{}
+    try {
+        $searchIndexer = Get-Service WSearch -ErrorAction SilentlyContinue
+        $result.Status = if($searchIndexer){$searchIndexer.Status}else{"N/A"}
+        $result.StartType = if($searchIndexer){$searchIndexer.StartType}else{"N/A"}
+    } catch {}
+    try {
+        $idx = Get-CimInstance -Namespace 'root\cimv2' -ClassName 'Win32_IndexingService' -ErrorAction SilentlyContinue
+        $result.IndexingActive = if($idx){$true}else{$false}
+    } catch { $result.IndexingActive = "N/A" }
+    try {
+        $events = Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Microsoft.Windows.Search'; ID=100} -MaxEvents 5 -ErrorAction SilentlyContinue
+        $result.RecentIndexingEvents = ($events | Measure-Object).Count
+    } catch { $result.RecentIndexingEvents = 0 }
+    $result.Note = "Windows Search indexing state (read-only)"
+    return $result
+}
+
+function Get-BcdBootState {
+    # Capture BCD settings if accessible
+    $result = @{}
+    try {
+        $bcdOutput = bcdedit /enum '{current}' 2>$null
+        $result.BcdCurrent = ($bcdOutput | Out-String).Trim()
+        $result.FastBoot = if($bcdOutput -match 'quietboot.*Yes'){"ENABLED"}elseif($bcdOutput -match 'quietboot.*No'){"DISABLED"}else{"UNKNOWN"}
+    } catch { $result.BcdCurrent = "Access denied or not available" }
+    $result.Note = "Boot Configuration Data state (read-only)"
+    return $result
+}
+
 function Measure-ExplorerColdStart {
     # Real Explorer.exe cold start (invasive - optional)
     if (-not $ExploreRestart) {
@@ -500,6 +605,7 @@ function Get-OptimizationStates {
         @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="EnablePMTUDiscovery"; Expected=1},
         @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="GlobalMaxTcpWindowSize"; Expected=65535},
         @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="TcpWindowSize"; Expected=65535},
+        @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="TcpAutoTuningLevel"; Expected=0},
         @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="SackOpts"; Expected=1},
         @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="Tcp1323Opts"; Expected=1},
         @{Path="HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"; Name="MaxUserPort"; Expected=65534},
@@ -711,6 +817,31 @@ function Compare-OptimizationStates($before, $after) {
     }
 }
 
+function Show-PreflightContaminationWarning {
+    if ($Silent) { return }
+    try {
+        $heavyApps = @('steam','discord','epicgames','battle.net','origin','uplay','gog','xbox','gamebar','nvidia','amd','intel','obs','streamlabs','chrome','firefox','brave','opera','edge','teams','slack','zoom','webex','skype','telegram','whatsapp','signal','icq','viber','line','wechat','qq','tim','dingtalk','lark','zoom','teams','slack','discord','skype','webex','gotomeeting','join.me','teamviewer','anydesk','remotepc','splashtop','logmein','screenconnect','connectwise','kaseya','ninja','pulseway','atera','n-able','solarwinds','manageengine','zoho','datto','autotask','freshservice','serviceNow','cherwell','bmc','ivanti','heat','ca','hp','dell','lenovo','asus','acer','msi','gigabyte','evga','corsair','coolermaster','thermaltake','nzxt','fractal','bequiet','noctua','phanteks','lianli','silverstone','antec','seasonic','evga','corsair','thermaltake','coolermaster','nzxt','bequiet','phanteks','fractal','lianli','silverstone','antec','seasonic','evga','corsair','thermaltake','coolermaster','nzxt','bequiet','phanteks','fractal','lianli','silverstone','antec','seasonic')
+        $runningHeavy = Get-Process | Where-Object { $procName = $_.Name.ToLower(); $heavyApps | Where-Object { $procName -like "*$_*" } } | Select-Object Name, @{N='WS(MB)';E={[math]::Round($_.WorkingSet64/1MB,0)}} | Sort-Object WS(MB) -Descending
+        if ($runningHeavy) {
+            Write-Host ""
+            Write-Host "  [WARNING] Heavy background apps detected:" -ForegroundColor Red
+            $runningHeavy | Select-Object -First 5 | ForEach-Object { Write-Host "    - $($_.Name) ($($_.'WS(MB)')MB)" -ForegroundColor Yellow }
+            Write-Host "  These apps WILL cause outliers and inflate latency measurements." -ForegroundColor DarkYellow
+            Write-Host "  Close them before profiling for accurate results." -ForegroundColor DarkYellow
+            Write-Host ""
+        }
+        # Check Defender
+        try {
+            $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
+            if ($defender -and $defender.RealTimeProtectionEnabled) {
+                Write-Host "  [INFO] Windows Defender real-time protection is ACTIVE." -ForegroundColor Cyan
+                Write-Host "         This adds overhead to file/registry/memory operations." -ForegroundColor Gray
+                Write-Host ""
+            }
+        } catch {}
+    } catch {}
+}
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================
@@ -722,6 +853,8 @@ if (-not $Silent) {
     Write-Host "  Mode: $Mode" -ForegroundColor White
     Write-Host "========================================" -ForegroundColor Cyan
 }
+
+Show-PreflightContaminationWarning
 
 # Gather all measurements
 $ProfileData = @{
@@ -829,8 +962,49 @@ if (-not $Silent) { Show-SectionHeader "14. Service Configuration State" }
 $ProfileData.Services = Get-ServiceConfigurationState
 Write-Host "    Disabled: $($ProfileData.Services.Disabled)  Manual: $($ProfileData.Services.Manual)  Auto: $($ProfileData.Services.Automatic)  Running: $($ProfileData.Services.Running) / $($ProfileData.Services.Total)" -ForegroundColor Gray
 
-# 15. Optimization States (registry value audit)
-if (-not $Silent) { Show-SectionHeader "15. Registry Optimization Audit" }
+# 15. TCP Internal Diagnostics (undocumented WMI)
+if (-not $Silent) { Show-SectionHeader "15. TCP Stack Internals (Undocumented WMI)" }
+$ProfileData.TcpDiagnostics = Get-TcpInternalDiagnostics
+if ($ProfileData.TcpDiagnostics.FastPathMisses) {
+    Write-Host "    Fast-path misses: $($ProfileData.TcpDiagnostics.FastPathMisses)" -ForegroundColor Gray
+    Write-Host "    Loopback fast-path misses: $($ProfileData.TcpDiagnostics.LoopbackFastPathMisses)" -ForegroundColor Gray
+    Write-Host "    Loss recovery episodes: $($ProfileData.TcpDiagnostics.LossRecoveryEpisodes)" -ForegroundColor Gray
+    Write-Host "    TCP timeouts: $($ProfileData.TcpDiagnostics.Timeouts)" -ForegroundColor Gray
+    Write-Host "    Checksum errors: $($ProfileData.TcpDiagnostics.ChecksumErrors)" -ForegroundColor Gray
+    Write-Host "    RSC events: $($ProfileData.TcpDiagnostics.RSCevents)" -ForegroundColor Gray
+}
+
+# 16. GPU Power State
+if (-not $Silent) { Show-SectionHeader "16. GPU Scheduling & Power State" }
+$ProfileData.GpuState = Get-GpuPowerState
+Write-Host "    GPU: $($ProfileData.GpuState.Name)" -ForegroundColor Gray
+Write-Host "    Driver: $($ProfileData.GpuState.DriverVersion)  Preemption: $($ProfileData.GpuState.PreemptionEnabled)" -ForegroundColor Gray
+Write-Host "    Utilization: $($ProfileData.GpuState.GpuUtilization)%" -ForegroundColor Gray
+
+# 17. Memory Compression State
+if (-not $Silent) { Show-SectionHeader "17. Memory Compression & SysMain" }
+$ProfileData.MemoryState = Get-MemoryCompressionState
+Write-Host "    Available: $($ProfileData.MemoryState.AvailableMB)MB  Cache: $($ProfileData.MemoryState.CacheMB)MB" -ForegroundColor Gray
+Write-Host "    Standby Cache: $($ProfileData.MemoryState.StandbyCacheMB)MB  Modified: $($ProfileData.MemoryState.ModifiedPageListMB)MB" -ForegroundColor Gray
+Write-Host "    SysMain: $($ProfileData.MemoryState.SysMainStatus) ($($ProfileData.MemoryState.SysMainStartType))" -ForegroundColor Gray
+
+# 18. Windows Search Indexing
+if (-not $Silent) { Show-SectionHeader "18. Windows Search Indexing" }
+$ProfileData.SearchState = Get-WindowsSearchState
+Write-Host "    WSearch service: $($ProfileData.SearchState.Status) ($($ProfileData.SearchState.StartType))" -ForegroundColor Gray
+Write-Host "    Recent indexing events: $($ProfileData.SearchState.RecentIndexingEvents)" -ForegroundColor Gray
+
+# 19. BCD Boot State
+if (-not $Silent) { Show-SectionHeader "19. Boot Configuration Data" }
+$ProfileData.BcdState = Get-BcdBootState
+if ($ProfileData.BcdState.FastBoot -ne "UNKNOWN") {
+    Write-Host "    Fast boot / quiet boot: $($ProfileData.BcdState.FastBoot)" -ForegroundColor Gray
+} else {
+    Write-Host "    BCD not accessible (requires admin elevation)" -ForegroundColor Yellow
+}
+
+# 20. Optimization States (registry value audit)
+if (-not $Silent) { Show-SectionHeader "20. Registry Optimization Audit" }
 $ProfileData.OptimizationStates = Get-OptimizationStates
 Show-OptimizationStatus $ProfileData.OptimizationStates
 

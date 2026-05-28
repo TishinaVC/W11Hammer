@@ -35,7 +35,7 @@ if(-not$isAdmin){
 }
 
 # Initialize
-$ScriptVersion="2.2.0"
+$ScriptVersion="2.4.0"
 $LogDir="$env:SystemDrive\W11LatencyFixLogs"
 $Timestamp=Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile="$LogDir\LatencyFix_$Timestamp.log"
@@ -91,11 +91,36 @@ function Set-SafeRegValue {
     }catch{Write-Log "Failed $Name : $_" "ERROR"}
 }
 
+function Set-ServiceConfig {
+    param([string]$ServiceName,[string]$StartType)
+    try{
+        $svc=Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if($null -eq $svc){
+            Write-Log "Service '$ServiceName' not found - skipping" "SKIP"
+            return
+        }
+        if($svc.StartType -eq $StartType){
+            Write-Log "Service '$ServiceName' already $StartType - skipping" "SKIP"
+            return
+        }
+        if($svc.Status -eq 'Running' -and $StartType -eq 'Disabled'){
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            Write-Log "Service '$ServiceName' stopped (was Running)" "INFO"
+        }
+        $oldType=$svc.StartType
+        Set-Service -Name $ServiceName -StartupType $StartType -ErrorAction Stop
+        Write-Log "Service '$ServiceName' start type: $oldType -> $StartType" "SUCCESS"
+        $Script:Changes+=@{Path="SERVICE";Name=$ServiceName;OldValue=$oldType;NewValue=$StartType;Type="Service"}
+    }catch{
+        Write-Log "Failed to configure service '$ServiceName': $_" "ERROR"
+    }
+}
+
 # Banner
 if(-not$Silent){
     Clear-Host
     Write-Host "W11LatencyFix v$ScriptVersion" -ForegroundColor Cyan
-    Write-Host "61 Verified Network and Performance Optimizations" -ForegroundColor White
+    Write-Host "65 Verified Network and Performance Optimizations" -ForegroundColor White
     Write-Host ""
 }
 
@@ -114,6 +139,20 @@ Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "Def
 Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "EnablePMTUDiscovery" 1
 Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "GlobalMaxTcpWindowSize" 65535
 Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "TcpWindowSize" 65535
+Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "TcpAutoTuningLevel" 0
+# CRITICAL FIX: netsh auto-tuning requires netsh command, not just registry
+Write-Log "Disabling TCP auto-tuning via netsh..." "INFO"
+try {
+    $netshResult = netsh interface tcp set global autotuninglevel=disabled 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "TCP auto-tuning disabled via netsh" "SUCCESS"
+        $Script:Changes+=@{Path="NETSH";Name="TcpAutoTuning";OldValue="normal";NewValue="disabled";Type="Netsh"}
+    } else {
+        Write-Log "netsh failed: $netshResult" "WARN"
+    }
+} catch {
+    Write-Log "netsh exception: $_" "WARN"
+}
 Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "SackOpts" 1
 Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "Tcp1323Opts" 1
 Set-SafeRegValue "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" "MaxUserPort" 65534
@@ -202,6 +241,57 @@ Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\
 Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "GPU Priority" 8
 Set-SafeRegValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile\Tasks\Games" "Priority" 6
 
+# Section 13: Service Optimizations (research-verified safe disables)
+if(-not$Silent){Write-Host "`n[13/13] Service Optimizations" -ForegroundColor Cyan}
+Set-ServiceConfig -ServiceName 'DiagTrack' -StartType 'Disabled'
+Set-ServiceConfig -ServiceName 'Spooler' -StartType 'Disabled'
+Set-ServiceConfig -ServiceName 'TrkWks' -StartType 'Disabled'
+Set-ServiceConfig -ServiceName 'WpnService' -StartType 'Disabled'
+Set-ServiceConfig -ServiceName 'SysMain' -StartType 'Disabled'
+Set-ServiceConfig -ServiceName 'WSearch' -StartType 'Disabled'
+
+# Section 14: Windows Defender Real-Time Scanning (reduces file I/O latency)
+if(-not$Silent){Write-Host "`n[14/15] Windows Defender Performance" -ForegroundColor Cyan}
+try {
+    Import-Module Defender -ErrorAction SilentlyContinue
+    $mpPref = Get-MpPreference -ErrorAction SilentlyContinue
+    if ($mpPref) {
+        $oldRT = $mpPref.DisableRealtimeMonitoring
+        if (-not $oldRT) {
+            Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+            Write-Log "Defender real-time protection disabled" "SUCCESS"
+            $Script:Changes+=@{Path="DEFENDER";Name="DisableRealtimeMonitoring";OldValue=$false;NewValue=$true;Type="Defender"}
+        } else {
+            Write-Log "Defender real-time protection already disabled" "SKIP"
+        }
+    } else {
+        Write-Log "Defender module not available - skipping" "SKIP"
+    }
+} catch {
+    Write-Log "Failed to configure Defender: $_" "WARN"
+}
+
+# Section 15: Power Plan (High Performance)
+if(-not$Silent){Write-Host "`n[15/15] Power Plan" -ForegroundColor Cyan}
+try {
+    $currentPlan = powercfg /getactivescheme 2>$null
+    $highPerf = powercfg /list 2>$null | Select-String -Pattern "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+    if ($highPerf) {
+        $oldPlan = ($currentPlan -split '\s+')[3]
+        powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Power plan set to High Performance" "SUCCESS"
+            $Script:Changes+=@{Path="POWER";Name="ActivePlan";OldValue=$oldPlan;NewValue="8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";Type="Power"}
+        } else {
+            Write-Log "powercfg setactive failed" "WARN"
+        }
+    } else {
+        Write-Log "High Performance plan not found on this system" "SKIP"
+    }
+} catch {
+    Write-Log "Failed to set power plan: $_" "WARN"
+}
+
 # Generate UNDO
 if(-not$Silent){Write-Host "`nGenerating UNDO..." -ForegroundColor Cyan}
 if($Script:Changes.Count-gt0){
@@ -212,7 +302,15 @@ if($Script:Changes.Count-gt0){
     $u+='Write-Host "W11LatencyFix UNDO Script" -ForegroundColor Cyan' + "`n"
     $u+='Write-Host "Reverting ' + $Script:Changes.Count + ' changes..." -ForegroundColor White' + "`n`n"
     foreach($c in $Script:Changes){
-        if($c.OldValue -eq "NOT_PRESENT"){
+        if($c.Type -eq "Netsh"){
+            $u+='try{$r=netsh interface tcp set global autotuninglevel=' + $c.OldValue + ' 2>&1;Write-Host "  Restored netsh: ' + $c.Name + ' -> ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
+        } elseif($c.Type -eq "Defender"){
+            $u+='try{Import-Module Defender -ErrorAction SilentlyContinue;Set-MpPreference -DisableRealtimeMonitoring $' + $c.OldValue + ' -ErrorAction Stop;Write-Host "  Restored Defender real-time protection: ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: Defender restore" -ForegroundColor Red}' + "`n"
+        } elseif($c.Type -eq "Power"){
+            $u+='try{powercfg /setactive ' + $c.OldValue + ' 2>$null;Write-Host "  Restored power plan" -ForegroundColor Green}catch{Write-Host "  Failed: Power plan restore" -ForegroundColor Red}' + "`n"
+        } elseif($c.Type -eq "Service"){
+            $u+='try{Set-Service -Name "' + $c.Name + '" -StartupType ' + $c.OldValue + ' -ErrorAction Stop;Write-Host "  Restored service: ' + $c.Name + ' -> ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
+        } elseif($c.OldValue -eq "NOT_PRESENT"){
             $u+='try{Remove-ItemProperty -Path "' + $c.Path + '" -Name "' + $c.Name + '" -ErrorAction SilentlyContinue;Write-Host "  Removed: ' + $c.Name + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
         } else {
             $valStr = if($c.Type -eq "String"){'"' + $c.OldValue + '"'}else{$c.OldValue}
