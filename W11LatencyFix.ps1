@@ -1,8 +1,8 @@
 #Requires -Version 5.1
-param([switch]$WhatIf,[switch]$AcceptTerms,[switch]$Silent,[switch]$NoRestart)
+param([switch]$AcceptTerms,[switch]$Silent,[switch]$NoRestart)
 
 # Interactive Terms Acceptance
-if(-not$WhatIf-and-not$AcceptTerms-and-not$Silent){
+if(-not$AcceptTerms-and-not$Silent){
     Clear-Host
     Write-Host "========================================" -ForegroundColor Red
     Write-Host "  W11LatencyFix - TERMS OF USE" -ForegroundColor Red
@@ -28,14 +28,14 @@ $isAdmin=([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 if(-not$isAdmin){
     Write-Host "Requesting Administrator..." -ForegroundColor Yellow
     $arg="-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`""
-    if($WhatIf){$arg+=" -WhatIf"}
     if($AcceptTerms){$arg+=" -AcceptTerms"}
+    if($Silent){$arg+=" -Silent"}
     Start-Process powershell.exe -ArgumentList $arg -Verb RunAs
     exit
 }
 
 # Initialize
-$ScriptVersion="2.1.0"
+$ScriptVersion="2.2.0"
 $LogDir="$env:SystemDrive\W11LatencyFixLogs"
 $Timestamp=Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile="$LogDir\LatencyFix_$Timestamp.log"
@@ -61,10 +61,6 @@ function Write-Log {
 
 function Invoke-RestorePoint {
     try {
-        if ($WhatIf) {
-            Write-Log "Would create System Restore Point" "SKIP"
-            return
-        }
         $restorePoints = Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Sort-Object -Property DateTime -Descending | Select-Object -First 1
         if ($restorePoints -and ((Get-Date) - $restorePoints.DateTime).TotalMinutes -lt 5) {
             Write-Log "Recent restore point exists, skipping" "SKIP"
@@ -81,15 +77,14 @@ function Set-SafeRegValue {
     param([string]$Path,[string]$Name,$Value,[string]$Type="DWord")
     try{
         if(-not(Test-Path $Path)){
-            if($WhatIf){if(-not$Silent){Write-Host "  WOULD CREATE: $Path" -ForegroundColor Yellow};return}
             New-Item -Path $Path -Force | Out-Null
         }
         $Old="NOT_PRESENT"
         try{$Old=(Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name}catch{}
         if($Old-eq$Value){Write-Log "$Name already set" "SKIP";return}
         $Script:Changes+=@{Path=$Path;Name=$Name;OldValue=$Old;NewValue=$Value;Type=$Type}
-        if($WhatIf){if(-not$Silent){Write-Host "  WOULD SET: $Name=$Value" -ForegroundColor Yellow}}
-        else{Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force;Write-Log "Set $Name=$Value" "SUCCESS"}
+        Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
+        Write-Log "Set $Name=$Value" "SUCCESS"
     }catch{Write-Log "Failed $Name : $_" "ERROR"}
 }
 
@@ -99,7 +94,6 @@ if(-not$Silent){
     Write-Host "W11LatencyFix v$ScriptVersion" -ForegroundColor Cyan
     Write-Host "61 Verified Network and Performance Optimizations" -ForegroundColor White
     Write-Host ""
-    if($WhatIf){Write-Host "*** WHATIF MODE-No changes ***" -ForegroundColor Yellow;Write-Host ""}
 }
 
 Write-Log "Starting..."
@@ -225,8 +219,8 @@ if($Script:Changes.Count-gt0){
     $u+='`nWrite-Host "`nUNDO Complete - Restart recommended" -ForegroundColor Green' + "`n"
     $u+='Write-Host "Press ENTER to exit..." -ForegroundColor Cyan' + "`n"
     $u+='$null = Read-Host' + "`n"
-    if(-not$WhatIf){Set-Content -Path $UndoScript -Value $u -Encoding UTF8;if(-not$Silent){Write-Host "  Created: $UndoScript" -ForegroundColor Green}}
-    else{if(-not$Silent){Write-Host "  Would create UNDO with $($Script:Changes.Count) entries" -ForegroundColor Yellow}}
+    Set-Content -Path $UndoScript -Value $u -Encoding UTF8
+    if(-not$Silent){Write-Host "  Created: $UndoScript" -ForegroundColor Green}
 }else{if(-not$Silent){Write-Host "  No changes to undo" -ForegroundColor Yellow}}
 
 # Summary
@@ -237,12 +231,11 @@ if(-not$Silent){
     Write-Host "  Changes: $($Script:Changes.Count)" -ForegroundColor $(if($Script:Changes.Count-gt0){"Green"}else{"Yellow"})
     Write-Host "========================================" -ForegroundColor Cyan
     Write-Host ""
-    if(-not$WhatIf-and$Script:Changes.Count-gt0){
+    if($Script:Changes.Count-gt0){
         Write-Host "  UNDO: $UndoScript" -ForegroundColor Cyan
         Write-Host "  LOG:  $LogFile" -ForegroundColor Cyan
         Write-Host ""
     }
-    if($WhatIf){Write-Host "  *** WHATIF-No changes made ***" -ForegroundColor Yellow;Write-Host ""}
     Write-Host "  Restart required for network changes" -ForegroundColor Yellow
     Write-Host "========================================" -ForegroundColor Cyan
 }
@@ -250,7 +243,7 @@ if(-not$Silent){
 Write-Log "Completed with $($Script:Changes.Count) changes"
 
 # Restart Prompt
-if(-not$NoRestart -and -not$WhatIf -and $Script:Changes.Count-gt0){
+if(-not$NoRestart -and $Script:Changes.Count-gt0){
     if(-not$Silent){
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Yellow
@@ -267,7 +260,6 @@ if(-not$NoRestart -and -not$WhatIf -and $Script:Changes.Count-gt0){
             Read-Host "Press ENTER to exit"
         }
     } else {
-        # Silent mode: auto-restart with warning
         Write-Log "Auto-restarting in 10 seconds (use -NoRestart to skip)" "WARN"
         Start-Sleep -Seconds 10
         Restart-Computer -Force
