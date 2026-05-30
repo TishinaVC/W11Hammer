@@ -1,246 +1,189 @@
-# W11LatencyFix v1.0 - Windows 11 Performance & Privacy Optimizer
+﻿# W11 Hammer — Windows 11 Network & Latency Optimizer
 
-A comprehensive, **100% safe** Windows 11 optimizer with **216+ tweaks** designed to improve performance, reduce latency, enhance privacy, and remove annoyances.
+A **scientifically validated** Windows 11 optimizer focused on **network latency, system responsiveness, and I/O performance**. Every change is verified with read-back confirmation, fully reversible, and logged.
 
-**✅ No destructive changes** | **✅ Fully reversible** | **✅ Auto-generated undo script**
-
----
-
-## ⚖️ LEGAL DISCLAIMER - READ BEFORE USE
-
-**By using this software, you agree to the following:**
-
-- This software is provided **"AS IS"** with **NO WARRANTY** of any kind
-- **YOU USE THIS SOFTWARE ENTIRELY AT YOUR OWN RISK**
-- The authors are **NOT LIABLE** for any damages, data loss, or issues
-- You are **SOLELY RESPONSIBLE** for any changes to your system
-- You **WAIVE ALL RIGHTS** to sue the authors for any reason
-- If you do not agree, **DO NOT USE THIS SOFTWARE**
-
-📄 **Full legal text:** See [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md)
+**✅ 64 verified optimizations** | **✅ No false positives** | **✅ Real-time profiler with A/B comparison**
 
 ---
 
-## 🛡️ Safety Guarantees
+## What This Project Is (and Is Not)
 
-- ✅ **System Restore Point** created automatically before any changes
-- ✅ **Reversibility Verified** - Ensures backup/undo capability before running
-- ✅ **Registry Backup** - All changes backed up to .reg files
-- ✅ **Auto-Generated Undo Script** - One-click restoration
-- ❌ **NO** BCD or boot configuration changes
-- ❌ **NO** Windows services disabled or modified
-- ❌ **NO** Windows features removed
-- ❌ **NO** scheduled tasks or persistence installed
-- ❌ **NO** system security settings modified
-- ❌ **NO** power plan or hibernation changes
-- ❌ **NO** Windows Update interference
-- ❌ **NO** breaking of Windows Search, Printing, or other core functions
+This is **NOT** a general-purpose Windows debloater, privacy tool, or system cleaner. This is a focused network and latency optimization suite built around:
 
-**All changes are to HKCU (user preferences) or safe HKLM network/system parameters only.**
+- **Actual measurement** — `W11Profiler.ps1` measures 9 real latency metrics before and after
+- **Scientific validation** — Every optimization hypothesis is tested, verified, or rejected
+- **Honest reporting** — Changes are verified with read-back confirmation; no fake "SUCCESS" logs
+- **Reversibility** — Every change is tracked and undoable via auto-generated `UNDO.ps1`
 
 ---
 
-## 📋 What This Script Does (61 Sections, 216+ Optimizations)
-
-### Network & Latency (15+ optimizations)
-- TCP stack tuning (Nagle algorithm, ACK frequency, window size)
-- DNS cache optimization
-- QoS bandwidth reservation release (20% back to you)
-- SMB/CIFS network share optimizations
-- NetBIOS hardening for security + performance
-
-### Gaming Performance (20+ optimizations)
-- Multimedia game priorities (GPU, I/O, scheduling)
-- Disable fullscreen optimizations (reduce input lag)
-- Disable Game Bar/DVR (remove overlay overhead)
-- Audio latency reduction (buffer size, enhancements)
-- USB selective suspend disable (responsive peripherals)
-- Mouse/keyboard responsiveness tweaks
-
-### Windows 11 Bloat Removal (25+ optimizations)
-- **Widgets** - Disable resource-consuming news/weather panel
-- **Teams Chat** - Remove from taskbar
-- **Recommended** section in Start menu
-- **Meet Now** - Remove from taskbar
-- **Home & Gallery** folders from File Explorer
-- **3D Objects** folder from This PC
-- **OneDrive** from navigation pane (optional)
-
-### Privacy & Telemetry (40+ optimizations)
-- Disable advertising ID
-- Disable app launch tracking
-- Disable location tracking & sensors
-- Disable speech recognition & typing insights
-- Disable Windows Error Reporting
-- Disable Customer Experience Improvement Program
-- Disable Activity History (Timeline)
-- Disable Find My Device
-- Disable automatic sample submission to Microsoft
-
-### Explorer & UI (35+ optimizations)
-- **Show file extensions** (security + convenience)
-- **Show hidden files** (power user favorite)
-- Restore **classic right-click menu** (Windows 11)
-- Visual effects: Best Performance
-- Menu animation speeds (snappier UI)
-- Disable folder type discovery (faster browsing)
-- Quick Access cleanup (remove recent/frequent)
-- Taskbar cleanup (People, Cortana, News, Task View, Meet Now)
-- Disable checkboxes for file selection
-- Disable Aero Shake (prevent accidental minimize)
-- Disable transparency (save GPU resources)
-
-### Windows Update Control (10+ optimizations)
-- Disable automatic driver updates (user control)
-- Notify before downloading updates
-- No auto-restart when logged in
-- 24-hour restart prompt timeout
-- Active hours configuration
-
-### System Responsiveness (20+ optimizations)
-- Disable startup app delays
-- Faster shutdown (reduce wait times)
-- Disable automatic maintenance (user control)
-- Memory management (Prefetch, Superfetch)
-- Time synchronization every hour
-
-### Cleanup (20+ operations)
-- Temp files (user locations only)
-- Browser caches (Chrome, Edge, Firefox)
-- Windows Event Logs
-- Thumbnail & icon caches
-- Recent items
-- Recycle Bin
-
-### More Quality-of-Life (50+ optimizations)
-- Disable Sticky/Filter/Toggle Keys shortcuts (no accidental activation)
-- Disable Windows Ink Workspace
-- Disable "Get tips and suggestions"
-- Disable "Finish setting up your device"
-- Disable Windows feedback requests
-- Disable cloud clipboard sync
-- Edge optimizations (disable startup boost, prelaunch, background apps)
-- File system tweaks (last access timestamp, 8.3 names)
-- Disable "How do you want to open this file" Store prompts
-- And much more...
-
----
-
-## 🚀 How to Use
-
-### IMPORTANT: Terms Acceptance Required
-
-**You MUST explicitly accept legal terms before running.**
-
-By running with `-AcceptTerms`, you acknowledge:
-- Software is provided "AS IS" with NO WARRANTY
-- YOU USE ENTIRELY AT YOUR OWN RISK
-- Authors are NOT LIABLE for any damages
-- You WAIVE ALL RIGHTS to sue
-
-### Quick Start (Recommended)
-```powershell
-# Accept terms and run (creates restore point automatically)
-.\W11LatencyFix.ps1 -AcceptTerms
-```
-
-**What happens:**
-1. ✅ Terms acceptance verified
-2. ✅ System Restore Point created automatically
-3. ✅ Reversibility checked (backup/undo capability)
-4. ✅ All 216 optimizations applied
-5. ✅ Changes backed up with undo script generated
-
-### Preview Changes First (No Acceptance Required)
-```powershell
-# Preview without applying changes
-.\W11LatencyFix.ps1 -WhatIf
-```
-
-### Undo All Changes
-```powershell
-# Run the auto-generated undo script:
-C:\W11LatencyFixLogs\Backups_YYYYMMDD_HHMMSS\UNDO_CHANGES.ps1
-```
-
----
-
-## 📁 Files
+## Files
 
 | File | Purpose |
 |------|---------|
-| `W11LatencyFix.ps1` | Main optimization script (216+ tweaks) |
-| `README.md` | This documentation |
+| `W11LatencyFix.ps1` | Main optimization script — 64 verified registry/netsh/service/power tweaks |
+| `W11Profiler.ps1` | Real-time profiler — measures boot, network, process, memory, file I/O, registry, DNS, TCP latency |
+| `W11Launcher.exe` | GUI wrapper — green **PATCH** button and red **UNDO** button, scripts embedded |
+| `RESEARCH_LOG.md` | 23 verified findings — what works, what doesn't, what was debunked |
+| `RUN_UNDO.ps1` | Auto-generated per-run undo script (created in `C:\W11LatencyFixLogs\Backups_*`) |
 
 ---
 
-## ✅ Requirements
+## What W11LatencyFix Actually Does (64 Optimizations, 14 Sections)
 
-- Windows 11 (also works on Windows 10)
+### Network & TCP (12 optimizations)
+- `TcpNoDelay=1` — Disable Nagle algorithm
+- `TcpDelAckTicks=0` — Reduce delayed ACKs
+- `TCPMaxDataRetransmissions=3` — Faster timeout recovery
+- `DefaultTTL=64`, `EnablePMTUDiscovery=1` — Proper path MTU
+- `GlobalMaxTcpWindowSize=65535`, `TcpWindowSize=65535` — Max buffer sizes
+- `TcpAutoTuningLevel=0` + `netsh set global autotuninglevel=disabled` — Disable TCP auto-tuning
+- `SackOpts=1`, `Tcp1323Opts=1` — SACK and window scaling
+- `MaxUserPort=65534`, `MaxFreeTcbs=65535`, `MaxFreeTWTcbs=1000`
+
+### DNS (4 optimizations)
+- Cache hash table tuning
+- Max TTL limits for cached entries
+
+### NetBIOS (2 optimizations)
+- `NodeType=2` (P-node, no broadcast)
+- `EnableLMHosts=0`
+
+### QoS (1 optimization)
+- `NonBestEffortLimit=0` — Remove 20% bandwidth reservation
+
+### SMB (5 optimizations)
+- Buffer sizes, max work items, commands
+
+### Explorer UI (12 optimizations)
+- Menu show delay, animations, taskbar buttons (Cortana, People, Task View, etc.)
+- Show file extensions, show hidden files
+- Quick Access cleanup
+
+### Start Menu & Tracking (6 optimizations)
+- Disable app launch tracking, recent docs, recommendations
+- Rotating lock screen, subscribed content ads
+
+### Game Bar / DVR (5 optimizations)
+- Disable GameDVR, AppCapture, AutoGameMode (overlay overhead)
+
+### System Profile (3 optimizations)
+- `NetworkThrottlingIndex=-1` (disable multimedia throttling)
+- GPU Priority and scheduling priority tweaks
+
+### Services (6 optimizations)
+- **DiagTrack** — Telemetry collection (safe to disable)
+- **Spooler** — Print spooler (safe if no printer)
+- **TrkWks** — Distributed Link Tracking (safe)
+- **WpnService** — Push notifications (safe)
+- **SysMain** — Superfetch/prefetch (safe on SSD)
+- **WSearch** — Windows Search indexing (safe)
+
+### Power Plan (1 optimization)
+- Set High Performance plan if available on system
+
+---
+
+## What This Will Never Do
+
+- ❌ Disable or tamper with Windows Defender (removed in v2.4.1 — Defender Tamper Protection makes this unreliable)
+- ❌ Modify BCD or boot configuration
+- ❌ Remove Windows features
+- ❌ Delete system files
+- ❌ Install persistence or scheduled tasks
+- ❌ Interfere with Windows Update
+- ❌ Make unverifiable claims about performance improvements
+
+---
+
+## How to Use
+
+### Option 1: GUI (Easiest)
+Double-click `W11Launcher.exe` → click **PATCH** or **UNDO**
+
+### Option 2: PowerShell
+```powershell
+# Apply optimizations
+.\W11LatencyFix.ps1 -AcceptTerms
+
+# Run silently
+.\W11LatencyFix.ps1 -AcceptTerms -Silent
+```
+
+### Option 3: Profile Before/After (Scientific)
+```powershell
+# Baseline profile (before any changes)
+.\W11Profiler.ps1 -Mode Baseline
+
+# Apply fixes
+.\W11LatencyFix.ps1 -AcceptTerms
+
+# Restart computer, then optimized profile
+.\W11Profiler.ps1 -Mode Optimized
+
+# Compare the two
+.\W11Profiler.ps1 -Mode Compare -BaselineFile "C:\W11LatencyFixLogs\Profiles\Profile_Baseline_*.json" -OptimizedFile "C:\W11LatencyFixLogs\Profiles\Profile_Optimized_*.json"
+```
+
+---
+
+## Requirements
+
+- Windows 11 (works on Windows 10)
 - PowerShell 5.1 or later
 - Administrator privileges
-- 50 MB free space for logs
+- ~10 MB free space for logs
 
 ---
 
-## 🔄 Reversibility
+## Reversibility
 
-Every single change is:
-1. **Automatically backed up** to `.reg` files
-2. **Tracked in undo script** for one-click restoration
-3. **Idempotent** (safe to run multiple times)
-4. **Logged** with before/after values
+Every change is:
+1. **Logged** with before/after values
+2. **Tracked** in `Script:Changes` array
+3. **Backed up** in auto-generated `UNDO.ps1`
+4. **Verified** with read-back confirmation
 
-**Your original settings are never lost.**
-
----
-
-## 📝 Log Files
-
-All actions logged to:
-```
-C:\W11LatencyFixLogs\LatencyFix_YYYYMMDD_HHMMSS.log
-```
+Your original settings are never lost. Run the UNDO script from `C:\W11LatencyFixLogs\Backups_YYYYMMDD_HHMMSS\UNDO.ps1`
 
 ---
 
-## ⚡ Performance Impact
+## Performance Impact
 
-| Area | Expected Improvement |
-|------|---------------------|
-| Network latency | 5-15ms reduction |
-| Game input lag | Reduced (fullscreen opts, Game Bar off) |
-| File Explorer | Snappier browsing, faster folder loading |
-| Startup | Faster (no app delays, no lock screen) |
-| Shutdown | Faster (reduced wait times) |
-| System responsiveness | Better (visual effects, animations) |
+| Metric | Verified Change | Cause |
+|--------|-----------------|-------|
+| ProcessCreation CV | Reduced (less variance) | Services disabled, less background contention |
+| FileWrite CV | Reduced | WSearch indexing stopped |
+| DnsResolution CV | Reduced | WSearch not indexing during DNS queries |
+| TcpConnect CV | Reduced | netsh auto-tuning disabled |
+| MemoryCommit outliers | Reduced (with fewer background apps) | SysMain disabled |
 
----
-
-## 🛡️ What This Will Never Do
-
-❌ Break Windows Update  
-❌ Break Windows Search  
-❌ Break Printing  
-❌ Break networking  
-❌ Prevent login  
-❌ Cause blue screens  
-❌ Make system unbootable  
-❌ Delete system files  
+**Important:** Background apps (browsers, Discord, Steam, games, IDEs) are the #1 cause of latency outliers. No registry tweak can compensate for 4GB+ of active applications. Close heavy apps before profiling for accurate results.
 
 ---
 
-## 📊 Stats
+## Research Findings
 
-- **1,845 lines** of PowerShell code
-- **216+ registry optimizations**
-- **61 sections**
-- **20+ cleanup operations**
-- **100% safe and reversible**
+See [`RESEARCH_LOG.md`](RESEARCH_LOG.md) for the full scientific process. Key findings:
+
+- **Finding 20:** `netsh` auto-tuning requires the `netsh` command, not just registry — registry value alone is ignored
+- **Finding 19:** Defender real-time protection does add I/O overhead, but programmatic disable is blocked by Tamper Protection
+- **Finding 21:** Background apps are the dominant cause of latency outliers, not registry settings
+- **Finding 23:** All changes now have read-back verification to prevent false-positive SUCCESS logs
 
 ---
 
-## 🤔 Troubleshooting
+## Stats
+
+- **~358 lines** of focused PowerShell (`W11LatencyFix.ps1`)
+- **~1,093 lines** of profiler (`W11Profiler.ps1`)
+- **64 verified optimizations** (not 216+ — old inflated count removed)
+- **14 sections**
+- **100% reversible**
+
+---
+
+## Troubleshooting
 
 ### "Script won't run"
 Right-click → Properties → Check "Unblock"
@@ -251,31 +194,27 @@ Unblock-File -Path ".\W11LatencyFix.ps1"
 ```
 
 ### "Access Denied"
-Run PowerShell as Administrator
+Run PowerShell as Administrator. The script auto-elevates if not admin.
 
 ### "Changes didn't apply"
-Restart your computer (network changes require it)
+Some changes (TCP registry tweaks) require a **restart**. The script tells you which ones.
 
 ### "Want to undo everything"
-Run the `UNDO_CHANGES.ps1` script from your backup folder
+Run the `UNDO.ps1` script from your backup folder in `C:\W11LatencyFixLogs\Backups_*`
 
 ---
 
-## 📝 License
+## License
 
-MIT - Use at your own risk. This script is provided as-is with no warranty.
-
-**However**, this script is designed to be as safe as possible with comprehensive undo capabilities.
+MIT — Use at your own risk. This script is provided as-is with no warranty.
 
 ---
 
-## 🎉 Final Notes
+## Final Notes
 
-- **WhatIf mode** lets you preview all changes before applying
-- **Undo script** is automatically generated for every run
 - **Safe to run multiple times** (idempotent changes)
-- **No persistence** - script runs once and exits completely
-- **No services disabled** - all Windows functions remain intact
-- **No boot modifications** - system remains fully bootable
+- **No persistence** — script runs once and exits completely
+- **Scientific** — profiler measures actual latency, not placebo
+- **Honest** — if a change can't be verified, it logs WARN, not SUCCESS
 
-**Enjoy your faster, cleaner, more private Windows 11!**
+**Measure first. Optimize second. Verify always.**
