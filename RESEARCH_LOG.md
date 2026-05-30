@@ -344,18 +344,43 @@ RSC REDUCES CPU overhead by batching network processing. This is a POSITIVE feat
 ---
 
 ## FINDING 19: Windows Defender Real-Time Protection is Major Latency Source
-**Status: CONFIRMED & FIXED**
+**Status: CONFIRMED & REMOVED FROM SCRIPT**
 
 **Evidence:**
 - Before disable: ProcessCreation CV=15%, FileWrite CV=11.4%
 - After disable + restart: ProcessCreation CV=2.8%, FileWrite CV=7.1%
 - Defender was scanning every file write, registry read, and memory allocation
 
+**Critical Discovery:**
+While Defender does add overhead, **Windows Defender Tamper Protection** silently blocks/reverts programmatic attempts to disable real-time protection. The `Set-MpPreference` command returns "success" but Windows immediately re-enables it. This created a **false positive** in the script — it logged SUCCESS but nothing actually changed.
+
+**Decision:**
+Removed the Defender disable from W11LatencyFix.ps1 entirely. The script no longer attempts to modify antivirus settings. Users who want to disable Defender must do so manually through Windows Security settings (which requires turning off Tamper Protection first).
+
 **Impact:**
-Defender adds measurable overhead to ALL I/O operations. On a system with heavy background apps, this compounds the problem.
+- Script no longer produces false-positive "SUCCESS" logs for Defender
+- No risk of triggering antivirus tamper alerts
+- Cleaner, more honest behavior
+
+---
+
+## FINDING 23: Script Changes Can Report Success Without Actually Applying
+**Status: CONFIRMED & FIXED in v2.4.1**
+
+**Evidence:**
+- `Set-MpPreference -DisableRealtimeMonitoring $true` logged SUCCESS but `Get-MpComputerStatus` showed it still enabled
+- `netsh interface tcp set global autotuninglevel=disabled` reported success but `netsh show global` showed `normal` on some systems
+- `Set-Service` and `Set-ItemProperty` can fail silently if permissions are insufficient
 
 **Fix Applied:**
-`Set-MpPreference -DisableRealtimeMonitoring $true` (reversible via UNDO)
+Added **read-back verification** after every critical change:
+- Registry: Write → Read back → Confirm value matches
+- netsh: Execute → `netsh show global` → Confirm state changed
+- Services: `Set-Service` → `Get-Service` → Confirm `StartType` matches
+- Power Plan: `powercfg /setactive` → `powercfg /getactivescheme` → Confirm active plan
+
+**Impact:**
+Script now distinguishes between "command exited cleanly" and "change actually persisted." No more false-positive SUCCESS logs.
 
 ---
 

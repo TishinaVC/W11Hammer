@@ -35,7 +35,7 @@ if(-not$isAdmin){
 }
 
 # Initialize
-$ScriptVersion="2.4.0"
+$ScriptVersion="2.4.1"
 $LogDir="$env:SystemDrive\W11LatencyFixLogs"
 $Timestamp=Get-Date -Format "yyyyMMdd_HHmmss"
 $LogFile="$LogDir\LatencyFix_$Timestamp.log"
@@ -85,9 +85,15 @@ function Set-SafeRegValue {
         $Old="NOT_PRESENT"
         try{$Old=(Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name}catch{}
         if($Old-eq$Value){Write-Log "$Name already set" "SKIP";return}
-        $Script:Changes+=@{Path=$Path;Name=$Name;OldValue=$Old;NewValue=$Value;Type=$Type}
         Set-ItemProperty -Path $Path -Name $Name -Value $Value -Type $Type -Force
-        Write-Log "Set $Name=$Value" "SUCCESS"
+        # VERIFY: read back to confirm it stuck
+        $verifyVal = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+        if($verifyVal -eq $Value){
+            $Script:Changes+=@{Path=$Path;Name=$Name;OldValue=$Old;NewValue=$Value;Type=$Type}
+            Write-Log "Set $Name=$Value (verified)" "SUCCESS"
+        } else {
+            Write-Log "Set $Name=$Value but read-back returned $verifyVal (may require restart)" "WARN"
+        }
     }catch{Write-Log "Failed $Name : $_" "ERROR"}
 }
 
@@ -109,8 +115,14 @@ function Set-ServiceConfig {
         }
         $oldType=$svc.StartType
         Set-Service -Name $ServiceName -StartupType $StartType -ErrorAction Stop
-        Write-Log "Service '$ServiceName' start type: $oldType -> $StartType" "SUCCESS"
-        $Script:Changes+=@{Path="SERVICE";Name=$ServiceName;OldValue=$oldType;NewValue=$StartType;Type="Service"}
+        # VERIFY: service actually changed
+        $verifySvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if($verifySvc -and $verifySvc.StartType -eq $StartType){
+            $Script:Changes+=@{Path="SERVICE";Name=$ServiceName;OldValue=$oldType;NewValue=$StartType;Type="Service"}
+            Write-Log "Service '$ServiceName' start type: $oldType -> $StartType (verified)" "SUCCESS"
+        } else {
+            Write-Log "Service '$ServiceName' set reported success but start type is $($verifySvc.StartType)" "WARN"
+        }
     }catch{
         Write-Log "Failed to configure service '$ServiceName': $_" "ERROR"
     }
@@ -120,7 +132,7 @@ function Set-ServiceConfig {
 if(-not$Silent){
     Clear-Host
     Write-Host "W11LatencyFix v$ScriptVersion" -ForegroundColor Cyan
-    Write-Host "65 Verified Network and Performance Optimizations" -ForegroundColor White
+    Write-Host "64 Verified Network and Performance Optimizations" -ForegroundColor White
     Write-Host ""
 }
 
@@ -145,8 +157,14 @@ Write-Log "Disabling TCP auto-tuning via netsh..." "INFO"
 try {
     $netshResult = netsh interface tcp set global autotuninglevel=disabled 2>&1
     if ($LASTEXITCODE -eq 0) {
-        Write-Log "TCP auto-tuning disabled via netsh" "SUCCESS"
-        $Script:Changes+=@{Path="NETSH";Name="TcpAutoTuning";OldValue="normal";NewValue="disabled";Type="Netsh"}
+        # VERIFY: netsh actually stuck
+        $verify = netsh interface tcp show global 2>&1 | Select-String -Pattern "auto-tuning"
+        if ($verify -and $verify -match "disabled") {
+            Write-Log "TCP auto-tuning disabled via netsh (verified)" "SUCCESS"
+            $Script:Changes+=@{Path="NETSH";Name="TcpAutoTuning";OldValue="normal";NewValue="disabled";Type="Netsh"}
+        } else {
+            Write-Log "netsh reported success but auto-tuning still active: $verify" "WARN"
+        }
     } else {
         Write-Log "netsh failed: $netshResult" "WARN"
     }
@@ -250,29 +268,8 @@ Set-ServiceConfig -ServiceName 'WpnService' -StartType 'Disabled'
 Set-ServiceConfig -ServiceName 'SysMain' -StartType 'Disabled'
 Set-ServiceConfig -ServiceName 'WSearch' -StartType 'Disabled'
 
-# Section 14: Windows Defender Real-Time Scanning (reduces file I/O latency)
-if(-not$Silent){Write-Host "`n[14/15] Windows Defender Performance" -ForegroundColor Cyan}
-try {
-    Import-Module Defender -ErrorAction SilentlyContinue
-    $mpPref = Get-MpPreference -ErrorAction SilentlyContinue
-    if ($mpPref) {
-        $oldRT = $mpPref.DisableRealtimeMonitoring
-        if (-not $oldRT) {
-            Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
-            Write-Log "Defender real-time protection disabled" "SUCCESS"
-            $Script:Changes+=@{Path="DEFENDER";Name="DisableRealtimeMonitoring";OldValue=$false;NewValue=$true;Type="Defender"}
-        } else {
-            Write-Log "Defender real-time protection already disabled" "SKIP"
-        }
-    } else {
-        Write-Log "Defender module not available - skipping" "SKIP"
-    }
-} catch {
-    Write-Log "Failed to configure Defender: $_" "WARN"
-}
-
-# Section 15: Power Plan (High Performance)
-if(-not$Silent){Write-Host "`n[15/15] Power Plan" -ForegroundColor Cyan}
+# Section 14: Power Plan (High Performance)
+if(-not$Silent){Write-Host "`n[14/14] Power Plan" -ForegroundColor Cyan}
 try {
     $currentPlan = powercfg /getactivescheme 2>$null
     $highPerf = powercfg /list 2>$null | Select-String -Pattern "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
@@ -280,8 +277,14 @@ try {
         $oldPlan = ($currentPlan -split '\s+')[3]
         powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Write-Log "Power plan set to High Performance" "SUCCESS"
-            $Script:Changes+=@{Path="POWER";Name="ActivePlan";OldValue=$oldPlan;NewValue="8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";Type="Power"}
+            # VERIFY: power plan actually changed
+            $verifyPlan = powercfg /getactivescheme 2>$null | Select-String -Pattern "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+            if ($verifyPlan) {
+                Write-Log "Power plan set to High Performance (verified)" "SUCCESS"
+                $Script:Changes+=@{Path="POWER";Name="ActivePlan";OldValue=$oldPlan;NewValue="8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";Type="Power"}
+            } else {
+                Write-Log "powercfg reported success but plan not active (may require admin elevation)" "WARN"
+            }
         } else {
             Write-Log "powercfg setactive failed" "WARN"
         }
@@ -304,8 +307,6 @@ if($Script:Changes.Count-gt0){
     foreach($c in $Script:Changes){
         if($c.Type -eq "Netsh"){
             $u+='try{$r=netsh interface tcp set global autotuninglevel=' + $c.OldValue + ' 2>&1;Write-Host "  Restored netsh: ' + $c.Name + ' -> ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: ' + $c.Name + '" -ForegroundColor Red}' + "`n"
-        } elseif($c.Type -eq "Defender"){
-            $u+='try{Import-Module Defender -ErrorAction SilentlyContinue;Set-MpPreference -DisableRealtimeMonitoring $' + $c.OldValue + ' -ErrorAction Stop;Write-Host "  Restored Defender real-time protection: ' + $c.OldValue + '" -ForegroundColor Green}catch{Write-Host "  Failed: Defender restore" -ForegroundColor Red}' + "`n"
         } elseif($c.Type -eq "Power"){
             $u+='try{powercfg /setactive ' + $c.OldValue + ' 2>$null;Write-Host "  Restored power plan" -ForegroundColor Green}catch{Write-Host "  Failed: Power plan restore" -ForegroundColor Red}' + "`n"
         } elseif($c.Type -eq "Service"){
